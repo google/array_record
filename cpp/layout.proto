@@ -1,0 +1,106 @@
+// Copyright 2022 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Specialized Riegeli file format designed for IO heavy tasks. It works for
+// storing large block of raw data without a size limit as well as structured
+// data like protobufs. In both cases it supports random access and parallel
+// reads in a single file.
+syntax = "proto2";
+
+package array_record;
+
+option cc_api_version = 2;
+
+// Riegeli files are composed in data chunks. Each data chunk contains multiple
+// records, and a record can be a serialized proto (with a size limit of 2GB) or
+// arbitrary bytes without size limits.
+//
+// Each Riegeli data chunk is encoded/compressed separately. The chunks are the
+// entry points for decoding, which allows us to read the chunks in parallel if
+// we know where these entry points are.
+//
+// We would not know the offsets to the chunks until we serialized them. Hence,
+// a natural way to record these offsets is to store them as a Riegeli chunk in
+// the footer. Finally, to tell where the footer start, we need a postscript
+// storing the offset of the footer. The postscript itself is also a Riegeli
+// chunk size 64KB and is 64KB aligned. Therefore we can locate it by
+// subtracting the file size by 64KB. See the illustrated file layout below.
+//
+//
+//  +-----------------+
+//  |    User Data    |
+//  |  Riegeli Chunk  |
+//  +-----------------+
+//  |    User Data    |
+//  |  Riegeli Chunk  |
+//  +-----------------+
+// /\/\/\/\/\/\/\/\/\/\/
+// /\/\/\/\/\/\/\/\/\/\/       _+-----------------------+
+//  +-----------------+      _/ | RiegeliFooterMetadata |
+//  |  Last User Data |   __/   +-----------------------+
+//  |      Chunk      | _/      |      Footer Proto     |
+//  +-----------------_/        +-----------------------+
+//  |                 |         |      Footer Proto     |
+//  |  Footer Chunk   |         +-----------------------+
+//  |                 |         |      Footer Proto     |
+//  +-----------------+---------+-----------------------+
+//  |RiegeliPostscript| <--- Must Align 64KB and fit in 64KB.
+//  +-----------------+
+//
+//
+// The footer is composed of a header (RiegeliFooterMetadata) and an array of
+// proto records. We choose an array of proto records instead of repeated fields
+// in a single proto to avoid the 2GB proto size limit. We can use proto `enum`
+// or `oneof` in the footer metadata to create polymorphic indices. In other
+// words, we can develop indices beyond array-like access patterns and extend to
+// any data structures worth serializing to disk.
+
+// Footer proto for locating user data chunk.
+message ArrayRecordFooter {
+  optional uint64 chunk_offset = 1;
+  optional uint64 decoded_data_size = 2;
+  optional uint64 num_records = 3;
+}
+
+// Metadata/Header in the footer.
+message RiegeliFooterMetadata {
+  // Metadata for ArrayRecordFooter.
+  message ArrayRecordMetadata {
+    // Version number of the ArrayRecord format itself.
+    // This number should rarely change unless there's a new great layout design
+    // that wasn't backward compatible and justifies its performance and
+    // reliability worth us to implement.
+    optional uint32 version = 1;
+    optional uint64 num_chunks = 2;
+    optional uint64 num_records = 3;
+  }
+
+  oneof metadata {
+    // Specifying the metadata be array_record_metadata implies the footer
+    // protos are ArrayRecordFooter.
+    ArrayRecordMetadata array_record_metadata = 1;
+  }
+  // Useful field for us to support append in the future.
+  reserved "previous_metadata";
+}
+
+// A small proto message serialized at the end of the file. This proto would be
+// stored three times in the postscript chunk for redundancy. Therefore its
+// serialized size times three replication count should be smaller than the 64KB
+// Riegeli block boundary.
+message RiegeliPostscript {
+  optional uint64 footer_offset = 1;
+  optional uint64 magic = 2;
+  reserved "footer_encoding";
+}
