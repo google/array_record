@@ -1,0 +1,8 @@
+build -c opt
+build --cxxopt=-std=c++17
+build --host_cxxopt=-std=c++17
+
+# TODO(fchern): Use non-hardcode path.
+build --action_env=PYTHON_BIN_PATH="/usr/bin/python3"
+build --repo_env=PYTHON_BIN_PATH="/usr/bin/python3"
+build --python_path="/usr/bin/python3"

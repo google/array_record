@@ -14,7 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 // Tests for parallel_for.h.
-#include "third_party/array_record/cpp/parallel_for.h"
+#include "cpp/parallel_for.h"
 
 #include <atomic>
 #include <cmath>
@@ -23,11 +23,11 @@ limitations under the License.
 #include <memory>
 #include <utility>
 
-#include "testing/base/public/gmock.h"
-#include "testing/base/public/gunit.h"
-#include "third_party/absl/functional/function_ref.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/array_record/cpp/thread_pool.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
+#include "cpp/thread_pool.h"
 
 namespace array_record {
 

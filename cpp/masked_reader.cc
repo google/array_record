@@ -13,19 +13,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/masked_reader.h"
+#include "cpp/masked_reader.h"
 
 #include <memory>
 #include <string>
 #include <utility>
 
-#include "third_party/absl/memory/memory.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/time/clock.h"
-#include "third_party/absl/time/time.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/riegeli/base/base.h"
-#include "third_party/riegeli/base/status.h"
+#include "absl/memory/memory.h"
+#include "absl/status/status.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
+#include "cpp/common.h"
+#include "riegeli/base/base.h"
+#include "riegeli/base/status.h"
 
 namespace array_record {
 

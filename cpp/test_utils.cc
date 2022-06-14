@@ -13,12 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/test_utils.h"
+#include "cpp/test_utils.h"
 
 #include <cstring>
 #include <random>
 
-#include "third_party/array_record/cpp/common.h"
+#include "cpp/common.h"
 
 namespace array_record {
 

@@ -25,12 +25,12 @@ limitations under the License.
 #include <type_traits>
 #include <utility>
 
-#include "third_party/absl/base/thread_annotations.h"
-#include "third_party/absl/functional/function_ref.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/synchronization/mutex.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/array_record/cpp/thread_pool.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
+#include "absl/synchronization/mutex.h"
+#include "cpp/common.h"
+#include "cpp/thread_pool.h"
 
 namespace array_record {
 

@@ -13,14 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/masked_reader.h"
+#include "cpp/masked_reader.h"
 
 #include <string>
 #include <tuple>
 
-#include "testing/base/public/gmock.h"
-#include "testing/base/public/gunit.h"
-#include "third_party/riegeli/bytes/string_reader.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "riegeli/bytes/string_reader.h"
 
 namespace array_record {
 namespace {

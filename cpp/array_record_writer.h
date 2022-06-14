@@ -65,17 +65,16 @@ limitations under the License.
 #include <utility>
 
 #include "google/protobuf/message_lite.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/array_record/cpp/sequenced_chunk_writer.h"
-#include "third_party/array_record/cpp/thread_pool.h"
-#include "third_party/riegeli/base/base.h"
-#include "third_party/riegeli/base/object.h"
-#include "third_party/riegeli/bytes/file_writer.h"
-#include "third_party/riegeli/chunk_encoding/chunk.h"
-#include "third_party/riegeli/chunk_encoding/chunk_encoder.h"
-#include "third_party/riegeli/chunk_encoding/compressor_options.h"
-#include "third_party/riegeli/records/records_metadata.proto.h"
+#include "absl/strings/string_view.h"
+#include "cpp/common.h"
+#include "cpp/sequenced_chunk_writer.h"
+#include "cpp/thread_pool.h"
+#include "riegeli/base/base.h"
+#include "riegeli/base/object.h"
+#include "riegeli/chunk_encoding/chunk.h"
+#include "riegeli/chunk_encoding/chunk_encoder.h"
+#include "riegeli/chunk_encoding/compressor_options.h"
+#include "riegeli/records/records_metadata.pb.h"
 
 namespace array_record {
 
@@ -280,7 +279,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
   };
 
   // Write records of various types.
-  bool WriteRecord(const proto2::MessageLite& record);
+  bool WriteRecord(const google::protobuf::MessageLite& record);
   bool WriteRecord(absl::string_view record);
   bool WriteRecord(const void* data, size_t num_bytes);
   template <typename T>
@@ -315,7 +314,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
   class SubmitChunkCallback;
 
   Options options_;
-  ThreadPool* pool_;
+  ARThreadPool* pool_;
   std::unique_ptr<riegeli::ChunkEncoder> chunk_encoder_;
   std::unique_ptr<SubmitChunkCallback> submit_chunk_callback_;
 };
@@ -361,7 +360,7 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
 
   // Ctor by taking the ownership of the other riegeli writer.
   explicit ArrayRecordWriter(Dest&& dest, Options options = Options(),
-                             ThreadPool* pool = nullptr)
+                             ARThreadPool* pool = nullptr)
       : ArrayRecordWriterBase(std::move(options), pool),
         dest_(std::make_shared<SequencedChunkWriter<Dest>>(std::move(dest))) {
     Initialize();
@@ -371,7 +370,7 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
   template <typename... DestArgs>
   explicit ArrayRecordWriter(std::tuple<DestArgs...> dest_args,
                              Options options = Options(),
-                             ThreadPool* pool = nullptr)
+                             ARThreadPool* pool = nullptr)
       : ArrayRecordWriterBase(std::move(options), pool),
         dest_(std::make_shared<SequencedChunkWriter<Dest>>(
             std::move(dest_args))) {

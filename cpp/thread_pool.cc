@@ -13,9 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/thread_pool.h"
+#include "cpp/thread_pool.h"
 
-#include "third_party/absl/flags/flag.h"
+#include "absl/flags/flag.h"
 
 ABSL_FLAG(uint32_t, array_record_global_pool_size, 64,
           "Number of threads for ArrayRecordGlobalPool");

@@ -20,8 +20,6 @@ syntax = "proto2";
 
 package array_record;
 
-option cc_api_version = 2;
-
 // Riegeli files are composed in data chunks. Each data chunk contains multiple
 // records, and a record can be a serialized proto (with a size limit of 2GB) or
 // arbitrary bytes without size limits.

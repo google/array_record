@@ -13,18 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/thread_compatible_shared_ptr.h"
+#include "cpp/thread_compatible_shared_ptr.h"
 
 #include <memory>
 #include <tuple>
 #include <utility>
 
-#include "testing/base/public/gmock.h"
-#include "testing/base/public/gunit.h"
-#include "third_party/absl/time/clock.h"
-#include "third_party/absl/time/time.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/array_record/cpp/thread_pool.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
+#include "cpp/common.h"
+#include "cpp/thread_pool.h"
 
 namespace array_record {
 namespace {

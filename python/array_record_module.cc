@@ -17,18 +17,17 @@ limitations under the License.
 #include <stdexcept>
 #include <string>
 
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/array_record/cpp/array_record_reader.h"
-#include "third_party/array_record/cpp/array_record_writer.h"
-#include "third_party/array_record/cpp/thread_pool.h"
-#include "third_party/pybind11/include/pybind11/pytypes.h"
-#include "third_party/riegeli/bytes/fd_reader.h"
-#include "third_party/riegeli/bytes/fd_writer.h"
-
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
+#include "cpp/array_record_reader.h"
+#include "cpp/array_record_writer.h"
+#include "cpp/thread_pool.h"
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
+#include "pybind11/pytypes.h"
 #include "pybind11/stl.h"
+#include "riegeli/bytes/fd_reader.h"
+#include "riegeli/bytes/fd_writer.h"
 
 namespace py = pybind11;
 

@@ -42,18 +42,18 @@ limitations under the License.
 #include <utility>
 
 #include "google/protobuf/message_lite.h"
-#include "third_party/absl/functional/function_ref.h"
-#include "third_party/absl/status/statusor.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/array_record/cpp/layout.proto.h"
-#include "third_party/array_record/cpp/thread_compatible_shared_ptr.h"
-#include "third_party/array_record/cpp/thread_pool.h"
-#include "third_party/riegeli/base/object.h"
-#include "third_party/riegeli/bytes/reader.h"
-#include "third_party/riegeli/chunk_encoding/chunk_decoder.h"
-#include "third_party/riegeli/records/chunk_reader.h"
-#include "third_party/riegeli/records/record_reader.h"
+#include "absl/functional/function_ref.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "cpp/common.h"
+#include "cpp/layout.pb.h"
+#include "cpp/thread_compatible_shared_ptr.h"
+#include "cpp/thread_pool.h"
+#include "riegeli/base/object.h"
+#include "riegeli/bytes/reader.h"
+#include "riegeli/chunk_encoding/chunk_decoder.h"
+#include "riegeli/records/chunk_reader.h"
+#include "riegeli/records/record_reader.h"
 
 namespace array_record {
 
@@ -138,7 +138,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
   //           query `status()` for diagnosing.
   template <typename ProtoT, typename FunctionT,
             typename = std::enable_if_t<
-                std::is_base_of_v<proto2::MessageLite, ProtoT>>>
+                std::is_base_of_v<google::protobuf::MessageLite, ProtoT>>>
   absl::Status ParallelReadRecords(FunctionT callback) const {
     return ParallelReadRecords(
         [&](uint64_t record_idx, absl::string_view record) -> absl::Status {
@@ -195,7 +195,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
   //           query `status()` for diagnosing.
   template <typename ProtoT, typename FunctionT,
             typename = std::enable_if_t<
-                std::is_base_of_v<proto2::MessageLite, ProtoT>>>
+                std::is_base_of_v<google::protobuf::MessageLite, ProtoT>>>
   absl::Status ParallelReadRecordsWithIndices(
       absl::Span<const uint64_t> indices, FunctionT callback) const {
     return ParallelReadRecordsWithIndices(
@@ -234,7 +234,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
   // `true`  (when `ok()`, `record` is set)  - success
   // `false` (when `ok()`)                   - data ends
   // `false` (when `!ok()`)                  - failure
-  bool ReadRecord(proto2::MessageLite* record);
+  bool ReadRecord(google::protobuf::MessageLite* record);
 
   // Reads  thenext record `RecordIndex()` pointed to.
   //

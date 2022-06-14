@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/array_record_writer.h"
+#include "cpp/array_record_writer.h"
 
 #include <memory>
 #include <random>
@@ -22,19 +22,19 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "testing/base/public/gmock.h"
-#include "testing/base/public/gunit.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/array_record/cpp/layout.proto.h"
-#include "third_party/array_record/cpp/test_utils.h"
-#include "third_party/array_record/cpp/thread_pool.h"
-#include "third_party/riegeli/bytes/string_reader.h"
-#include "third_party/riegeli/bytes/string_writer.h"
-#include "third_party/riegeli/chunk_encoding/constants.h"
-#include "third_party/riegeli/records/record_reader.h"
-#include "third_party/riegeli/records/record_writer.h"
-#include "third_party/riegeli/records/records_metadata.proto.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "absl/strings/string_view.h"
+#include "cpp/common.h"
+#include "cpp/layout.pb.h"
+#include "cpp/test_utils.h"
+#include "cpp/thread_pool.h"
+#include "riegeli/bytes/string_reader.h"
+#include "riegeli/bytes/string_writer.h"
+#include "riegeli/chunk_encoding/constants.h"
+#include "riegeli/records/record_reader.h"
+#include "riegeli/records/record_writer.h"
+#include "riegeli/records/records_metadata.pb.h"
 
 namespace array_record {
 
@@ -101,7 +101,7 @@ TEST_P(ArrayRecordWriterTest, MoveTest) {
   // Once moved we can no longer write records.
   EXPECT_FALSE(writer.WriteRecord(test_str[3]));
 
-  ASSERT_OK(moved_writer.status());
+  ASSERT_TRUE(moved_writer.status().ok());
   EXPECT_TRUE(moved_writer.WriteRecord(test_str[3]));
   EXPECT_TRUE(moved_writer.WriteRecord(test_str[4]));
   ASSERT_TRUE(moved_writer.Close());
@@ -175,7 +175,7 @@ TEST_P(ArrayRecordWriterTest, RandomDatasetTest) {
 
   // Verify we can access the file randomly by chunk_offset recorded in the
   // footer
-  for (int i = 0; i < num_chunks; ++i) {
+  for (auto i = 0UL; i < num_chunks; ++i) {
     ASSERT_TRUE(reader.Seek(footers[i].chunk_offset()));
     absl::string_view result_view;
     ASSERT_TRUE(reader.ReadRecord(result_view)) << reader.status();

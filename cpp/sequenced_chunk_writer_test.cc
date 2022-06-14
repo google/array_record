@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/sequenced_chunk_writer.h"
+#include "cpp/sequenced_chunk_writer.h"
 
 #include <future>  // NOLINT(build/c++11)
 #include <memory>
@@ -21,22 +21,21 @@ limitations under the License.
 #include <tuple>
 #include <utility>
 
-#include "testing/base/public/gmock.h"
-#include "testing/base/public/gunit.h"
-#include "third_party/absl/flags/flag.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/strings/cord.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/array_record/cpp/thread_pool.h"
-#include "third_party/riegeli/bytes/chain_writer.h"
-#include "third_party/riegeli/bytes/cord_writer.h"
-#include "third_party/riegeli/bytes/file_writer.h"
-#include "third_party/riegeli/bytes/string_reader.h"
-#include "third_party/riegeli/bytes/string_writer.h"
-#include "third_party/riegeli/chunk_encoding/chunk.h"
-#include "third_party/riegeli/chunk_encoding/compressor_options.h"
-#include "third_party/riegeli/chunk_encoding/simple_encoder.h"
-#include "third_party/riegeli/records/record_reader.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "absl/flags/flag.h"
+#include "absl/status/status.h"
+#include "absl/strings/cord.h"
+#include "cpp/common.h"
+#include "cpp/thread_pool.h"
+#include "riegeli/bytes/chain_writer.h"
+#include "riegeli/bytes/cord_writer.h"
+#include "riegeli/bytes/string_reader.h"
+#include "riegeli/bytes/string_writer.h"
+#include "riegeli/chunk_encoding/chunk.h"
+#include "riegeli/chunk_encoding/compressor_options.h"
+#include "riegeli/chunk_encoding/simple_encoder.h"
+#include "riegeli/records/record_reader.h"
 
 namespace array_record {
 namespace {
@@ -69,14 +68,6 @@ TEST(SequencedChunkWriterTest, RvalCtorTest) {
     auto to_cord =
         std::make_unique<SequencedChunkWriter<riegeli::CordWriter<>>>(
             std::move(cord_writer));
-  }
-  {
-    File* tmp_file =
-        file::CreateTempFile(absl::GetFlag(FLAGS_test_tmpdir)).ValueOrDie();
-    auto file_writer = riegeli::FileWriter(tmp_file);
-    auto to_file =
-        std::make_unique<SequencedChunkWriter<riegeli::FileWriter<>>>(
-            std::move(file_writer));
   }
 }
 
@@ -124,7 +115,6 @@ class TestCommitChunkCallback
 };
 
 TEST(SequencedChunkWriterTest, SanityTestCodeSnippet) {
-  auto pool = ArrayRecordGlobalPool();
   std::string encoded;
   auto callback = TestCommitChunkCallback();
 
@@ -152,10 +142,8 @@ TEST(SequencedChunkWriterTest, SanityTestCodeSnippet) {
       return chunk;
     });
     ASSERT_TRUE(writer->CommitFutureChunk(encoding_task.get_future()));
-    pool->Schedule([=, encoding_task = std::move(encoding_task)]() mutable {
-      encoding_task();
-      writer->SubmitFutureChunks(false);
-    });
+    encoding_task();
+    writer->SubmitFutureChunks(false);
   }
   // Calling SubmitFutureChunks(true) blocks the current thread until all
   // encoding tasks complete.

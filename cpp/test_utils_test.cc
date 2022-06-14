@@ -13,14 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/test_utils.h"
+#include "cpp/test_utils.h"
 
 #include <random>
 
-#include "testing/base/public/gmock.h"
-#include "testing/base/public/gunit.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/array_record/cpp/common.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "absl/strings/string_view.h"
+#include "cpp/common.h"
 
 namespace array_record {
 namespace {

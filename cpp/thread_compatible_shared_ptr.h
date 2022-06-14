@@ -47,7 +47,7 @@ limitations under the License.
 #include <type_traits>
 #include <utility>
 
-#include "third_party/absl/synchronization/mutex.h"
+#include "absl/synchronization/mutex.h"
 
 namespace array_record {
 

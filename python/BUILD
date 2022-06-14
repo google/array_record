@@ -10,19 +10,21 @@ pybind_extension(
     name = "array_record_module",
     srcs = ["array_record_module.cc"],
     deps = [
-        "//third_party/absl/status",
-        "//third_party/absl/strings",
-        "//third_party/array_record/cpp:array_record_reader",
-        "//third_party/array_record/cpp:array_record_writer",
-        "//third_party/array_record/cpp:thread_pool",
-        "//third_party/riegeli/bytes:fd_reader",
-        "//third_party/riegeli/bytes:fd_writer",
+        "//cpp:array_record_reader",
+        "//cpp:array_record_writer",
+        "//cpp:thread_pool",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_riegeli//riegeli/bytes:fd_reader",
+        "@com_google_riegeli//riegeli/bytes:fd_writer",
     ],
 )
 
-py3_test(
+py_test(
     name = "array_record_module_test",
     srcs = ["array_record_module_test.py"],
+    python_version = "PY3",
+    srcs_version = "PY3",
     deps = [
         ":array_record_module",
         "//third_party/py/absl/testing:absltest",

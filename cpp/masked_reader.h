@@ -19,9 +19,9 @@ limitations under the License.
 #include <memory>
 #include <string>
 
-#include "third_party/absl/types/optional.h"
-#include "third_party/riegeli/base/base.h"
-#include "third_party/riegeli/bytes/reader.h"
+#include "absl/types/optional.h"
+#include "riegeli/base/base.h"
+#include "riegeli/bytes/reader.h"
 
 namespace array_record {
 

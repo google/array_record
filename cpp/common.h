@@ -16,9 +16,9 @@ limitations under the License.
 #ifndef ARRAY_RECORD_CPP_COMMON_H_
 #define ARRAY_RECORD_CPP_COMMON_H_
 
-#include "third_party/absl/base/attributes.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/strings/str_format.h"
+#include "absl/base/attributes.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_format.h"
 
 namespace array_record {
 

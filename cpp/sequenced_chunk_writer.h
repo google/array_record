@@ -31,16 +31,16 @@ limitations under the License.
 #include <type_traits>
 #include <utility>
 
-#include "third_party/absl/base/thread_annotations.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/status/statusor.h"
-#include "third_party/absl/synchronization/mutex.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/riegeli/base/base.h"
-#include "third_party/riegeli/base/object.h"
-#include "third_party/riegeli/bytes/writer.h"
-#include "third_party/riegeli/chunk_encoding/chunk.h"
-#include "third_party/riegeli/records/chunk_writer.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
+#include "cpp/common.h"
+#include "riegeli/base/base.h"
+#include "riegeli/base/object.h"
+#include "riegeli/bytes/writer.h"
+#include "riegeli/chunk_encoding/chunk.h"
+#include "riegeli/records/chunk_writer.h"
 
 namespace array_record {
 

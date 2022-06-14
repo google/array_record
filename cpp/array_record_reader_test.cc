@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/array_record_reader.h"
+#include "cpp/array_record_reader.h"
 
 #include <memory>
 #include <random>
@@ -22,20 +22,20 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "testing/base/public/gmock.h"
-#include "testing/base/public/gunit.h"
-#include "third_party/absl/functional/function_ref.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/array_record/cpp/array_record_writer.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/array_record/cpp/layout.proto.h"
-#include "third_party/array_record/cpp/test_utils.h"
-#include "third_party/array_record/cpp/thread_pool.h"
-#include "third_party/riegeli/bytes/string_reader.h"
-#include "third_party/riegeli/bytes/string_writer.h"
-#include "third_party/riegeli/chunk_encoding/chunk_decoder.h"
-#include "third_party/riegeli/records/chunk_reader.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
+#include "cpp/array_record_writer.h"
+#include "cpp/common.h"
+#include "cpp/layout.pb.h"
+#include "cpp/test_utils.h"
+#include "cpp/thread_pool.h"
+#include "riegeli/bytes/string_reader.h"
+#include "riegeli/bytes/string_writer.h"
+#include "riegeli/chunk_encoding/chunk_decoder.h"
+#include "riegeli/records/chunk_reader.h"
 
 constexpr uint32_t kDatasetSize = 10000;
 
@@ -92,13 +92,16 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
   auto reader_before_move = ArrayRecordReader<riegeli::StringReader<>>(
       std::forward_as_tuple(encoded), ArrayRecordReaderBase::Options(),
       use_thread_pool() ? get_pool() : nullptr);
-  ASSERT_OK(reader_before_move.status());
+  ASSERT_TRUE(reader_before_move.status().ok());
 
-  ASSERT_OK(reader_before_move.ParallelReadRecords(
-      [&](uint64_t record_index, absl::string_view record) -> absl::Status {
-        EXPECT_EQ(record, test_str[record_index]);
-        return absl::OkStatus();
-      }));
+  ASSERT_TRUE(
+      reader_before_move
+          .ParallelReadRecords([&](uint64_t record_index,
+                                   absl::string_view record) -> absl::Status {
+            EXPECT_EQ(record, test_str[record_index]);
+            return absl::OkStatus();
+          })
+          .ok());
 
   ArrayRecordReader<riegeli::StringReader<>> reader =
       std::move(reader_before_move);
@@ -106,12 +109,15 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
   ASSERT_FALSE(reader_before_move.is_open());  // NOLINT
 
   std::vector<uint64_t> indices = {1, 2, 4};
-  ASSERT_OK(reader.ParallelReadRecordsWithIndices(
-      indices,
-      [&](uint64_t indices_idx, absl::string_view record) -> absl::Status {
-        EXPECT_EQ(record, test_str[indices[indices_idx]]);
-        return absl::OkStatus();
-      }));
+  ASSERT_TRUE(reader
+                  .ParallelReadRecordsWithIndices(
+                      indices,
+                      [&](uint64_t indices_idx,
+                          absl::string_view record) -> absl::Status {
+                        EXPECT_EQ(record, test_str[indices[indices_idx]]);
+                        return absl::OkStatus();
+                      })
+                  .ok());
 
   absl::string_view record_view;
   for (auto i : IndicesOf(test_str)) {
@@ -157,23 +163,28 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
       std::forward_as_tuple(encoded),
       ArrayRecordReaderBase::Options().set_readahead_buffer_size(2048),
       use_thread_pool() ? get_pool() : nullptr);
-  ASSERT_OK(reader.status());
+  ASSERT_TRUE(reader.status().ok());
   EXPECT_EQ(reader.NumRecords(), kDatasetSize);
 
-  ASSERT_OK(reader.ParallelReadRecords(
-      [&](uint64_t record_index,
-          absl::string_view result_view) -> absl::Status {
-        EXPECT_EQ(result_view, records[record_index]);
-        return absl::OkStatus();
-      }));
+  ASSERT_TRUE(reader
+                  .ParallelReadRecords(
+                      [&](uint64_t record_index,
+                          absl::string_view result_view) -> absl::Status {
+                        EXPECT_EQ(result_view, records[record_index]);
+                        return absl::OkStatus();
+                      })
+                  .ok());
 
   std::vector<uint64_t> indices = {0, 3, 5, 7, 101, 2000};
-  ASSERT_OK(reader.ParallelReadRecordsWithIndices(
-      indices,
-      [&](uint64_t indices_idx, absl::string_view result_view) -> absl::Status {
-        EXPECT_EQ(result_view, records[indices[indices_idx]]);
-        return absl::OkStatus();
-      }));
+  ASSERT_TRUE(reader
+                  .ParallelReadRecordsWithIndices(
+                      indices,
+                      [&](uint64_t indices_idx,
+                          absl::string_view result_view) -> absl::Status {
+                        EXPECT_EQ(result_view, records[indices[indices_idx]]);
+                        return absl::OkStatus();
+                      })
+                  .ok());
 
   // Test sequential read
   absl::string_view result_view;

@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/array_record_reader.h"
+#include "cpp/array_record_reader.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -29,26 +29,26 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "third_party/absl/base/optimization.h"
-#include "third_party/absl/base/thread_annotations.h"
-#include "third_party/absl/functional/bind_front.h"
-#include "third_party/absl/functional/function_ref.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/absl/synchronization/mutex.h"
-#include "third_party/absl/types/span.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/array_record/cpp/layout.proto.h"
-#include "third_party/array_record/cpp/masked_reader.h"
-#include "third_party/array_record/cpp/parallel_for.h"
-#include "third_party/array_record/cpp/thread_compatible_shared_ptr.h"
-#include "third_party/riegeli/base/object.h"
-#include "third_party/riegeli/base/options_parser.h"
-#include "third_party/riegeli/base/status.h"
-#include "third_party/riegeli/bytes/reader.h"
-#include "third_party/riegeli/chunk_encoding/chunk_decoder.h"
-#include "third_party/riegeli/records/chunk_reader.h"
-#include "third_party/riegeli/records/record_position.h"
+#include "absl/base/optimization.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/functional/bind_front.h"
+#include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
+#include "cpp/common.h"
+#include "cpp/layout.pb.h"
+#include "cpp/masked_reader.h"
+#include "cpp/parallel_for.h"
+#include "cpp/thread_compatible_shared_ptr.h"
+#include "riegeli/base/object.h"
+#include "riegeli/base/options_parser.h"
+#include "riegeli/base/status.h"
+#include "riegeli/bytes/reader.h"
+#include "riegeli/chunk_encoding/chunk_decoder.h"
+#include "riegeli/records/chunk_reader.h"
+#include "riegeli/records/record_position.h"
 
 namespace array_record {
 
@@ -58,7 +58,7 @@ constexpr size_t kRiegeliBlockSize = (1 << 16);
 // This number should rarely change unless there's a new great layout design
 // that wasn't backward compatible and justifies its performance and reliability
 // worth us to implement.
-constexpr uint32 kArrayRecordV1 = 1;
+constexpr uint32_t kArrayRecordV1 = 1;
 
 // Magic number for ArrayRecord
 constexpr uint64_t kMagic = 0x71930e704fdae05eULL;
@@ -185,7 +185,7 @@ void ArrayRecordReaderBase::Initialize() {
   }
   uint32_t max_parallelism = 1;
   if (state_->pool) {
-    max_parallelism = state_->pool->num_threads();
+    max_parallelism = state_->pool->NumThreads();
     if (state_->options.max_parallelism().has_value()) {
       max_parallelism =
           std::min(max_parallelism, state_->options.max_parallelism().value());
@@ -491,12 +491,12 @@ bool ArrayRecordReaderBase::SeekRecord(uint64_t record_index) {
   return true;
 }
 
-bool ArrayRecordReaderBase::ReadRecord(proto2::MessageLite* record) {
+bool ArrayRecordReaderBase::ReadRecord(google::protobuf::MessageLite* record) {
   absl::string_view result_view;
   if (!ReadRecord(&result_view)) {
     return false;
   }
-  return record->ParsePartialFromString(result_view);
+  return record->ParsePartialFromString(result_view.data());
 }
 
 bool ArrayRecordReaderBase::ReadRecord(absl::string_view* record) {

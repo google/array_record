@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/array_record_writer.h"
+#include "cpp/array_record_writer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -28,26 +28,26 @@ limitations under the License.
 #include <vector>
 
 #include "google/protobuf/message_lite.h"
-#include "third_party/absl/base/thread_annotations.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/status/statusor.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/absl/synchronization/mutex.h"
-#include "third_party/absl/types/span.h"
-#include "third_party/array_record/cpp/common.h"
-#include "third_party/array_record/cpp/layout.proto.h"
-#include "third_party/array_record/cpp/sequenced_chunk_writer.h"
-#include "third_party/array_record/cpp/thread_pool.h"
-#include "third_party/riegeli/base/object.h"
-#include "third_party/riegeli/base/options_parser.h"
-#include "third_party/riegeli/bytes/chain_writer.h"
-#include "third_party/riegeli/chunk_encoding/chunk.h"
-#include "third_party/riegeli/chunk_encoding/chunk_encoder.h"
-#include "third_party/riegeli/chunk_encoding/compressor_options.h"
-#include "third_party/riegeli/chunk_encoding/constants.h"
-#include "third_party/riegeli/chunk_encoding/deferred_encoder.h"
-#include "third_party/riegeli/chunk_encoding/simple_encoder.h"
-#include "third_party/riegeli/chunk_encoding/transpose_encoder.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
+#include "cpp/common.h"
+#include "cpp/layout.pb.h"
+#include "cpp/sequenced_chunk_writer.h"
+#include "cpp/thread_pool.h"
+#include "riegeli/base/object.h"
+#include "riegeli/base/options_parser.h"
+#include "riegeli/bytes/chain_writer.h"
+#include "riegeli/chunk_encoding/chunk.h"
+#include "riegeli/chunk_encoding/chunk_encoder.h"
+#include "riegeli/chunk_encoding/compressor_options.h"
+#include "riegeli/chunk_encoding/constants.h"
+#include "riegeli/chunk_encoding/deferred_encoder.h"
+#include "riegeli/chunk_encoding/simple_encoder.h"
+#include "riegeli/chunk_encoding/transpose_encoder.h"
 
 namespace array_record {
 
@@ -203,7 +203,7 @@ class ArrayRecordWriterBase::SubmitChunkCallback
   const CompressorOptions compression_options_;
 
   absl::Mutex mu_;
-  const uint32_t max_parallelism_;
+  const int32_t max_parallelism_;
   int32_t num_concurrent_chunk_writers_ ABSL_GUARDED_BY(mu_) = 0;
   friend class absl::Condition;
 
@@ -261,7 +261,7 @@ ArrayRecordWriterBase& ArrayRecordWriterBase::operator=(
 void ArrayRecordWriterBase::Initialize() {
   uint32_t max_parallelism = 1;
   if (pool_) {
-    max_parallelism = pool_->num_threads();
+    max_parallelism = pool_->NumThreads();
     if (options_.max_parallelism().has_value()) {
       max_parallelism =
           std::min(max_parallelism, options_.max_parallelism().value());
@@ -333,7 +333,7 @@ std::unique_ptr<riegeli::ChunkEncoder> ArrayRecordWriterBase::CreateEncoder() {
   return encoder;
 }
 
-bool ArrayRecordWriterBase::WriteRecord(const proto2::MessageLite& record) {
+bool ArrayRecordWriterBase::WriteRecord(const google::protobuf::MessageLite& record) {
   return WriteRecordImpl(record);
 }
 
@@ -358,23 +358,25 @@ bool ArrayRecordWriterBase::WriteRecordImpl(Record&& record) {
   if (chunk_encoder_->num_records() >= options_.group_size()) {
     auto writer = get_writer();
     auto encoder = std::move(chunk_encoder_);
-    std::promise<absl::StatusOr<Chunk>> chunk_promise;
-    if (!writer->CommitFutureChunk(chunk_promise.get_future())) {
+    auto chunk_promise =
+        std::make_shared<std::promise<absl::StatusOr<Chunk>>>();
+    if (!writer->CommitFutureChunk(chunk_promise->get_future())) {
       Fail(writer->status());
       return false;
     }
     chunk_encoder_ = CreateEncoder();
     if (pool_) {
+      std::shared_ptr<riegeli::ChunkEncoder> shared_encoder =
+          std::move(encoder);
       submit_chunk_callback_->TrackConcurrentChunkWriters();
-      pool_->Schedule([writer, encoder = std::move(encoder),
-                       chunk_promise = std::move(chunk_promise)]() mutable {
+      pool_->Schedule([writer, shared_encoder, chunk_promise]() mutable {
         AR_ENDO_TASK("Encode riegeli chunk");
-        chunk_promise.set_value(EncodeChunk(encoder.get()));
+        chunk_promise->set_value(EncodeChunk(shared_encoder.get()));
         writer->SubmitFutureChunks(false);
       });
       return true;
     }
-    chunk_promise.set_value(EncodeChunk(encoder.get()));
+    chunk_promise->set_value(EncodeChunk(encoder.get()));
     if (!writer->SubmitFutureChunks(true)) {
       Fail(writer->status());
       return false;

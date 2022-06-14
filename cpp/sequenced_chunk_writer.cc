@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "third_party/array_record/cpp/sequenced_chunk_writer.h"
+#include "cpp/sequenced_chunk_writer.h"
 
 #include <algorithm>
 #include <chrono>  // NOLINT(build/c++11)
@@ -21,16 +21,16 @@ limitations under the License.
 #include <tuple>
 #include <utility>
 
-#include "third_party/absl/base/thread_annotations.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/status/statusor.h"
-#include "third_party/absl/strings/str_format.h"
-#include "third_party/absl/strings/str_join.h"
-#include "third_party/absl/synchronization/mutex.h"
-#include "third_party/riegeli/base/base.h"
-#include "third_party/riegeli/base/status.h"
-#include "third_party/riegeli/chunk_encoding/chunk.h"
-#include "third_party/riegeli/chunk_encoding/constants.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
+#include "absl/synchronization/mutex.h"
+#include "riegeli/base/base.h"
+#include "riegeli/base/status.h"
+#include "riegeli/chunk_encoding/chunk.h"
+#include "riegeli/chunk_encoding/constants.h"
 
 namespace array_record {
 
