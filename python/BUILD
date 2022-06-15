@@ -23,10 +23,9 @@ pybind_extension(
 py_test(
     name = "array_record_module_test",
     srcs = ["array_record_module_test.py"],
+    data = [":array_record_module.so"],
     python_version = "PY3",
     srcs_version = "PY3",
     deps = [
-        ":array_record_module",
-        "//third_party/py/absl/testing:absltest",
     ],
 )
