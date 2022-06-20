@@ -53,9 +53,8 @@ PYBIND11_MODULE(array_record_module, m) {
                    std::string(file_writer->status().message()));
              }
              return array_record::ArrayRecordWriter<
-                 std::unique_ptr<riegeli::Writer>>(
-                 std::move(file_writer), status_or_option.value(),
-                 array_record::ArrayRecordGlobalPool());
+                 std::unique_ptr<riegeli::Writer>>(std::move(file_writer),
+                                                   status_or_option.value());
            }),
            py::arg("path"), py::arg("options") = "")
       .def("ok", &ArrayRecordWriter::ok)
