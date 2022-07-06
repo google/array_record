@@ -215,6 +215,11 @@ class ArrayRecordReaderBase : public riegeli::Object {
   // Number of records in the opened file.
   uint64_t NumRecords() const;
 
+  // Number of records in each compressed chunk configured at the file writing
+  // stage by `ArrayRecordWriterBase::Options::set_group_size`. The acutal
+  // number of records per group could be smaller equals to this number.
+  uint64_t RecordGroupSize();
+
   // Index of the record to be read.
   uint64_t RecordIndex() const;
 
@@ -236,7 +241,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
   // `false` (when `!ok()`)                  - failure
   bool ReadRecord(google::protobuf::MessageLite* record);
 
-  // Reads  thenext record `RecordIndex()` pointed to.
+  // Reads the next record `RecordIndex()` pointed to.
   //
   // Return values:
   // `true`  (when `ok()`, `record` is set)  - success

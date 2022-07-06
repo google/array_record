@@ -476,6 +476,14 @@ uint64_t ArrayRecordReaderBase::NumRecords() const {
   }
   return state_->num_records;
 }
+
+uint64_t ArrayRecordReaderBase::RecordGroupSize() {
+  if (!ok()) {
+    return 0;
+  }
+  return state_->record_group_size;
+}
+
 uint64_t ArrayRecordReaderBase::RecordIndex() const {
   if (!ok()) {
     return 0;

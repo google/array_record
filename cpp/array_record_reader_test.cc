@@ -103,6 +103,8 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
           })
           .ok());
 
+  EXPECT_EQ(reader_before_move.RecordGroupSize(), 2);
+
   ArrayRecordReader<riegeli::StringReader<>> reader =
       std::move(reader_before_move);
   // Once a reader is moved, it is closed.
@@ -139,6 +141,8 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
   EXPECT_FALSE(reader.ReadRecord(&record_view));
   EXPECT_TRUE(reader.ok());
 
+  EXPECT_EQ(reader.RecordGroupSize(), 2);
+
   ASSERT_TRUE(reader.Close());
 }
 
@@ -165,6 +169,9 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
       use_thread_pool() ? get_pool() : nullptr);
   ASSERT_TRUE(reader.status().ok());
   EXPECT_EQ(reader.NumRecords(), kDatasetSize);
+  uint64_t group_size =
+      std::min(ArrayRecordWriterBase::Options::kDefaultGroupSize, kDatasetSize);
+  EXPECT_EQ(reader.RecordGroupSize(), group_size);
 
   ASSERT_TRUE(reader
                   .ParallelReadRecords(
