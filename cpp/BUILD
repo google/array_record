@@ -8,16 +8,19 @@ licenses(["notice"])
 proto_library(
     name = "layout_proto",
     srcs = ["layout.proto"],
+    compatible_with = ["//buildenv/target:non_prod"],
 )
 
 cc_proto_library(
     name = "layout_cc_proto",
+    compatible_with = ["//buildenv/target:non_prod"],
     deps = [":layout_proto"],
 )
 
 cc_library(
     name = "common",
     hdrs = ["common.h"],
+    compatible_with = ["//buildenv/target:non_prod"],
     deps = [
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
@@ -29,6 +32,7 @@ cc_library(
     name = "sequenced_chunk_writer",
     srcs = ["sequenced_chunk_writer.cc"],
     hdrs = ["sequenced_chunk_writer.h"],
+    compatible_with = ["//buildenv/target:non_prod"],
     deps = [
         ":common",
         "@com_google_absl//absl/base:core_headers",
@@ -50,6 +54,7 @@ cc_library(
     name = "thread_pool",
     srcs = ["thread_pool.cc"],
     hdrs = ["thread_pool.h"],
+    compatible_with = ["//buildenv/target:non_prod"],
     deps = [
         "@com_google_absl//absl/flags:flag",
         "@eigen3//:eigen3",
@@ -59,6 +64,7 @@ cc_library(
 cc_library(
     name = "parallel_for",
     hdrs = ["parallel_for.h"],
+    compatible_with = ["//buildenv/target:non_prod"],
     deps = [
         ":common",
         ":thread_pool",
@@ -72,6 +78,7 @@ cc_library(
 cc_library(
     name = "thread_compatible_shared_ptr",
     hdrs = ["thread_compatible_shared_ptr.h"],
+    compatible_with = ["//buildenv/target:non_prod"],
     deps = ["@com_google_absl//absl/synchronization"],
 )
 
@@ -98,6 +105,7 @@ cc_library(
     name = "array_record_writer",
     srcs = ["array_record_writer.cc"],
     hdrs = ["array_record_writer.h"],
+    compatible_with = ["//buildenv/target:non_prod"],
     deps = [
         ":common",
         ":layout_cc_proto",
@@ -128,6 +136,7 @@ cc_library(
     name = "masked_reader",
     srcs = ["masked_reader.cc"],
     hdrs = ["masked_reader.h"],
+    compatible_with = ["//buildenv/target:non_prod"],
     deps = [
         ":common",
         "@com_google_absl//absl/memory",
@@ -144,6 +153,7 @@ cc_library(
     name = "array_record_reader",
     srcs = ["array_record_reader.cc"],
     hdrs = ["array_record_reader.h"],
+    compatible_with = ["//buildenv/target:non_prod"],
     deps = [
         ":common",
         ":layout_cc_proto",
