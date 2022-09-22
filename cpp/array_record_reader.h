@@ -330,6 +330,10 @@ class ArrayRecordReader : public ArrayRecordReaderBase {
       : ArrayRecordReaderBase(std::move(options), pool),
         main_reader_(ThreadCompatibleSharedPtr<riegeli::Reader>::Create<Src>(
             std::move(src_args))) {
+    if (!main_reader_->ok()) {
+      Fail(main_reader_->status());
+      return;
+    }
     if (!main_reader_->SupportsNewReader()) {
       Fail(absl::InvalidArgumentError(
           "ArrayRecordReader only work on inputs with random access support."));
