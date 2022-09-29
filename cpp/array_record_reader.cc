@@ -572,7 +572,7 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
     if (buffer_to_add * state_->chunk_group_size >= state_->footer.size()) {
       break;
     }
-    // Although our internal ThreadPool takes gtl::AnyInvocable which is
+    // Although our internal ThreadPool takes absl::AnyInvocable which is
     // movable, OSS ThreadPool only takes std::function which requires all the
     // captures to be copyable. Therefore we must wrap the promise in a
     // shared_ptr to copy it over to the scheduled task.
