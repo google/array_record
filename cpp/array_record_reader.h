@@ -46,14 +46,10 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "cpp/common.h"
-#include "cpp/layout.pb.h"
 #include "cpp/thread_compatible_shared_ptr.h"
 #include "cpp/thread_pool.h"
 #include "riegeli/base/object.h"
 #include "riegeli/bytes/reader.h"
-#include "riegeli/chunk_encoding/chunk_decoder.h"
-#include "riegeli/records/chunk_reader.h"
-#include "riegeli/records/record_reader.h"
 
 namespace array_record {
 
@@ -103,11 +99,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
   //
   //   uint64_t record_index, absl::string_view record_data -> absl::Status
   //
-  // Return values:
-  // `true`  - Successfully read all the data.
-  // `false` - Any of the record/chunk failure would fail the entire read.
-  //           In such case the reader is no longer `heathy()` and user may
-  //           query `status()` for diagnosing.
+  // Return values: status ok for a sucessful read.
   absl::Status ParallelReadRecords(
       absl::FunctionRef<absl::Status(/*record_index=*/uint64_t,
                                      /*record_data=*/absl::string_view)>
@@ -120,22 +112,16 @@ class ArrayRecordReaderBase : public riegeli::Object {
   //
   // Example:
   //
-  //   if(!reader.ParallelReadRecords<GenericFeatureVector>(
+  //   auto status = reader.ParallelReadRecords<GenericFeatureVector>(
   //     [&](uint64_t record_index, GenericFeatureVector result_gfv) {
   //         // do our work
   //         return absl::OkStatus();
   //     }))
-  //   return reader.status();
-  //
   //
   // This method is a handy wrapper for processing protobufs stored in
   // ArrayRecord.
   //
-  // Return values:
-  // `true`  - Successfully read all the data.
-  // `false` - Any of the record/chunk failure would fail the entire read.
-  //           In such case the reader is no longer `heathy()` and user may
-  //           query `status()` for diagnosing.
+  // Return values: status ok for a sucessful read.
   template <typename ProtoT, typename FunctionT,
             typename = std::enable_if_t<
                 std::is_base_of_v<google::protobuf::MessageLite, ProtoT>>>
@@ -159,11 +145,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
   //
   // To obtain the record index, do `indices[indices_index]`.
   //
-  // Return values:
-  // `true`  - Successfully read all the data.
-  // `false` - Any of the record/chunk failure would fail the entire read.
-  //           In such case the reader is no longer `heathy()` and user may
-  //           query `status()` for diagnosing.
+  // Return values: status ok for a sucessful read.
   absl::Status ParallelReadRecordsWithIndices(
       absl::Span<const uint64_t> indices,
       absl::FunctionRef<absl::Status(/*indices_index=*/uint64_t,
@@ -180,19 +162,14 @@ class ArrayRecordReaderBase : public riegeli::Object {
   //
   // Example:
   //
-  //   if(!reader.ParallelReadRecordsWithIndices<GenericFeatureVector>(
-  //     {1, 2, 3},
+  //   auto status = reader.ParallelReadRecordsWithIndices<GenericFeatureVector>
+  //     ({1, 2, 3},
   //     [&](uint64_t indices_index, GenericFeatureVector result_gfv) {
   //          // do our work
   //          return absl::OkStatus();
-  //     }))
-  //   reader.status();
+  //     });
   //
-  // Return values:
-  // `true`  - Successfully read all the data.
-  // `false` - Any of the record/chunk failure would fail the entire read.
-  //           In such case the reader is no longer `heathy()` and user may
-  //           query `status()` for diagnosing.
+  // Return values: status ok for a sucessful read.
   template <typename ProtoT, typename FunctionT,
             typename = std::enable_if_t<
                 std::is_base_of_v<google::protobuf::MessageLite, ProtoT>>>
@@ -209,6 +186,49 @@ class ArrayRecordReaderBase : public riegeli::Object {
                                  indices_idx);
           }
           return callback(indices_idx, std::move(record_proto));
+        });
+  }
+
+  // Reads the records with user supplied range and invokes the callback
+  // function of signature:
+  //
+  //   uint64_t record_index, absl::string_view record_data -> absl::Status
+  //
+  // The specified `begin` and `end` must within the range of the available
+  // records. `begin` is inclusive, and `end` is exclusive.
+  //
+  // Return values: status ok for a sucessful read.
+  absl::Status ParallelReadRecordsInRange(
+      uint64_t begin, uint64_t end,
+      absl::FunctionRef<absl::Status(/*record_index=*/uint64_t,
+                                     /*record_data=*/absl::string_view)>
+          callback) const;
+
+  // Reads the records with user supplied range and invokes the callback
+  // function of signature:
+  //
+  //   uint64_t record_index, UserProtoType user_proto -> absl::Status
+  //
+  // The specified `begin` and `end` must within the range of the available
+  // records. `begin` is inclusive, and `end` is exclusive.
+  //
+  // Return values: status ok for a sucessful read.
+  template <typename ProtoT, typename FunctionT,
+            typename = std::enable_if_t<
+                std::is_base_of_v<google::protobuf::MessageLite, ProtoT>>>
+  absl::Status ParallelReadRecordsInRange(uint64_t begin, uint64_t end,
+                                          FunctionT callback) const {
+    return ParallelReadRecordsInRange(
+        begin, end,
+        [&](uint64_t recrod_index, absl::string_view record) -> absl::Status {
+          ProtoT record_proto;
+          // Like ParseFromString(), but accepts messages that are missing
+          // required fields.
+          if (!record_proto.ParsePartialFromString(record)) {
+            return InternalError("Failed to parse. record_index: %d",
+                                 recrod_index);
+          }
+          return callback(recrod_index, std::move(record_proto));
         });
   }
 

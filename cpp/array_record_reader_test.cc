@@ -37,7 +37,7 @@ limitations under the License.
 #include "riegeli/chunk_encoding/chunk_decoder.h"
 #include "riegeli/records/chunk_reader.h"
 
-constexpr uint32_t kDatasetSize = 10000;
+constexpr uint32_t kDatasetSize = 10050;
 
 namespace array_record {
 namespace {
@@ -173,25 +173,54 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
       std::min(ArrayRecordWriterBase::Options::kDefaultGroupSize, kDatasetSize);
   EXPECT_EQ(reader.RecordGroupSize(), group_size);
 
+  std::vector<bool> read_all_records(kDatasetSize, false);
   ASSERT_TRUE(reader
                   .ParallelReadRecords(
                       [&](uint64_t record_index,
                           absl::string_view result_view) -> absl::Status {
                         EXPECT_EQ(result_view, records[record_index]);
+                        EXPECT_FALSE(read_all_records[record_index]);
+                        read_all_records[record_index] = true;
                         return absl::OkStatus();
                       })
                   .ok());
+  for (bool record_was_read : read_all_records) {
+    EXPECT_TRUE(record_was_read);
+  }
 
   std::vector<uint64_t> indices = {0, 3, 5, 7, 101, 2000};
+  std::vector<bool> read_indexed_records(indices.size(), false);
   ASSERT_TRUE(reader
                   .ParallelReadRecordsWithIndices(
                       indices,
                       [&](uint64_t indices_idx,
                           absl::string_view result_view) -> absl::Status {
                         EXPECT_EQ(result_view, records[indices[indices_idx]]);
+                        EXPECT_FALSE(read_indexed_records[indices_idx]);
+                        read_indexed_records[indices_idx] = true;
                         return absl::OkStatus();
                       })
                   .ok());
+  for (bool record_was_read : read_indexed_records) {
+    EXPECT_TRUE(record_was_read);
+  }
+
+  uint64_t begin = 10, end = 101;
+  std::vector<bool> read_range_records(end - begin, false);
+  ASSERT_TRUE(reader
+                  .ParallelReadRecordsInRange(
+                      begin, end,
+                      [&](uint64_t record_index,
+                          absl::string_view result_view) -> absl::Status {
+                        EXPECT_EQ(result_view, records[record_index]);
+                        EXPECT_FALSE(read_range_records[record_index - begin]);
+                        read_range_records[record_index - begin] = true;
+                        return absl::OkStatus();
+                      })
+                  .ok());
+  for (bool record_was_read : read_range_records) {
+    EXPECT_TRUE(record_was_read);
+  }
 
   // Test sequential read
   absl::string_view result_view;
