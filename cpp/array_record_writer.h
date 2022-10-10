@@ -83,7 +83,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
  public:
   class Options {
    public:
-    Options() {}
+    Options();
 
     // Parses options from text:
     // ```
@@ -267,6 +267,9 @@ class ArrayRecordWriterBase : public riegeli::Object {
     std::optional<riegeli::RecordsMetadata> metadata() const {
       return metadata_;
     }
+
+    // Serialize the options to a string.
+    std::string ToString() const;
 
    private:
     int32_t group_size_ = kDefaultGroupSize;

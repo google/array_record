@@ -125,6 +125,9 @@ struct ArrayRecordReaderBase::ArrayRecordReaderState {
   std::queue<IndexedPair<std::future<std::vector<ChunkDecoder>>>>
       future_decoders;
 
+  // Writer options for debugging purposes.
+  std::optional<std::string> writer_options = std::nullopt;
+
   uint64_t ChunkEndOffset(uint64_t chunk_idx) const {
     if (chunk_idx == footer.size() - 1) {
       return footer_offset;
@@ -263,6 +266,10 @@ void ArrayRecordReaderBase::Initialize() {
       return;
     }
     state_->num_records = footer_metadata.array_record_metadata().num_records();
+    if (footer_metadata.array_record_metadata().has_writer_options()) {
+      state_->writer_options =
+          footer_metadata.array_record_metadata().writer_options();
+    }
   }
   {
     AR_ENDO_SCOPE("Reading footer body");
@@ -755,6 +762,10 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
   }
 
   return true;
+}
+
+std::optional<std::string> ArrayRecordReaderBase::WriterOptionsString() const {
+  return state_->writer_options;
 }
 
 }  // namespace array_record
