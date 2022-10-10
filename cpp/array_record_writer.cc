@@ -187,13 +187,48 @@ ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
   return options;
 }
 
+std::string ArrayRecordWriterBase::Options::ToString() const {
+  std::string option;
+  absl::StrAppend(&option, "group_size:", this->group_size_,
+                  ",transpose:", this->transpose_ ? "true" : "false",
+                  ",pad_to_block_boundary:",
+                  this->pad_to_block_boundary_ ? "true" : "false");
+  if (this->transpose_) {
+    absl::StrAppend(&option,
+                    ",transpose_bucket_size:", this->transpose_bucket_size_);
+  }
+  switch (this->compressor_options().compression_type()) {
+    case riegeli::CompressionType::kNone:
+      absl::StrAppend(&option, ",uncompressed");
+      break;
+    case riegeli::CompressionType::kBrotli:
+      absl::StrAppend(
+          &option, ",brotli:", this->compressor_options().compression_level());
+      break;
+    case riegeli::CompressionType::kZstd:
+      absl::StrAppend(&option,
+                      ",zstd:", this->compressor_options().compression_level());
+      break;
+    case riegeli::CompressionType::kSnappy:
+      absl::StrAppend(&option, ",snappy");
+      break;
+  }
+  if (this->compressor_options().window_log().has_value()) {
+    absl::StrAppend(&option, ",window_log:",
+                    this->compressor_options().window_log().value());
+  }
+  if (max_parallelism_.has_value()) {
+    absl::StrAppend(&option, ",max_parallelism:", max_parallelism_.value());
+  }
+  return option;
+}
+
 // Thread compatible callback guarded by SequencedChunkWriter's mutex.
 class ArrayRecordWriterBase::SubmitChunkCallback
     : public SequencedChunkWriterBase::SubmitChunkCallback {
  public:
   explicit SubmitChunkCallback(const ArrayRecordWriterBase::Options options)
-      : compression_options_(options.compressor_options()),
-        max_parallelism_(options.max_parallelism().value()) {
+      : options_(options), max_parallelism_(options.max_parallelism().value()) {
     constexpr uint64_t kDefaultDecodedDataSize = (1 << 20);
     last_decoded_data_size_.store(kDefaultDecodedDataSize);
   }
@@ -220,7 +255,7 @@ class ArrayRecordWriterBase::SubmitChunkCallback
   void WriteFooterAndPostscript(SequencedChunkWriterBase* writer);
 
  private:
-  const CompressorOptions compression_options_;
+  const Options options_;
 
   absl::Mutex mu_;
   const int32_t max_parallelism_;
@@ -476,8 +511,11 @@ ArrayRecordWriterBase::SubmitChunkCallback::CreateFooterChunk() {
   footer_metadata.mutable_array_record_metadata()->set_num_chunks(
       array_footer_.size());
   footer_metadata.mutable_array_record_metadata()->set_num_records(num_records);
+  footer_metadata.mutable_array_record_metadata()->set_writer_options(
+      options_.ToString());
   // Perhaps we can compress the footer
-  return ChunkFromSpan(compression_options_, absl::MakeConstSpan(array_footer_),
+  return ChunkFromSpan(options_.compressor_options(),
+                       absl::MakeConstSpan(array_footer_),
                        std::optional(footer_metadata));
 }
 

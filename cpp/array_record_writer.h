@@ -268,6 +268,9 @@ class ArrayRecordWriterBase : public riegeli::Object {
       return metadata_;
     }
 
+    // Serialize the options to a string.
+    std::string ToString() const;
+
    private:
     int32_t group_size_ = kDefaultGroupSize;
     riegeli::CompressorOptions compressor_options_;
