@@ -31,6 +31,7 @@ limitations under the License.
 #include "absl/base/thread_annotations.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
@@ -62,6 +63,8 @@ constexpr uint32_t kZstdDefaultWindowLog = 20;
 // Magic number for ArrayRecord
 // Generated from `echo 'ArrayRecord' | md5sum | cut -b 1-16`
 constexpr uint64_t kMagic = 0x71930e704fdae05eULL;
+
+constexpr char kArrayRecordDefaultCompression[] = "zstd:3";
 
 using riegeli::Chunk;
 using riegeli::ChunkType;
@@ -109,11 +112,17 @@ absl::StatusOr<Chunk> ChunkFromSpan(CompressorOptions compression_options,
 
 }  // namespace
 
+ArrayRecordWriterBase::Options::Options() {
+  DCHECK_OK(
+      this->compressor_options_.FromString(kArrayRecordDefaultCompression));
+}
+
 // static
 absl::StatusOr<ArrayRecordWriterBase::Options>
 ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
   ArrayRecordWriterBase::Options options;
   OptionsParser options_parser;
+  options_parser.AddOption("default", ValueParser::FailIfAnySeen());
   // Group
   options_parser.AddOption(
       "group_size", ValueParser::Int(1, INT32_MAX, &options.group_size_));
@@ -151,6 +160,15 @@ ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
   if (!options_parser.FromString(text)) {
     return options_parser.status();
   }
+  // From our benchmarks we figured zstd:3 gives the best trade-off for both the
+  // compression and decomopression speed.
+  if (text == "default" ||
+      (!absl::StrContains(compressor_text, "uncompressed") &&
+       !absl::StrContains(compressor_text, "brotli") &&
+       !absl::StrContains(compressor_text, "snappy") &&
+       !absl::StrContains(compressor_text, "zstd"))) {
+    absl::StrAppend(&compressor_text, ",", kArrayRecordDefaultCompression);
+  }
   // max_parallelism is set after options_parser.FromString()
   if (max_parallelism > 0) {
     options.set_max_parallelism(max_parallelism);
@@ -167,13 +185,48 @@ ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
   return options;
 }
 
+std::string ArrayRecordWriterBase::Options::ToString() const {
+  std::string option;
+  absl::StrAppend(&option, "group_size:", this->group_size_,
+                  ",transpose:", this->transpose_ ? "true" : "false",
+                  ",pad_to_block_boundary:",
+                  this->pad_to_block_boundary_ ? "true" : "false");
+  if (this->transpose_) {
+    absl::StrAppend(&option,
+                    ",transpose_bucket_size:", this->transpose_bucket_size_);
+  }
+  switch (this->compressor_options().compression_type()) {
+    case riegeli::CompressionType::kNone:
+      absl::StrAppend(&option, ",uncompressed");
+      break;
+    case riegeli::CompressionType::kBrotli:
+      absl::StrAppend(
+          &option, ",brotli:", this->compressor_options().compression_level());
+      break;
+    case riegeli::CompressionType::kZstd:
+      absl::StrAppend(&option,
+                      ",zstd:", this->compressor_options().compression_level());
+      break;
+    case riegeli::CompressionType::kSnappy:
+      absl::StrAppend(&option, ",snappy");
+      break;
+  }
+  if (this->compressor_options().window_log().has_value()) {
+    absl::StrAppend(&option, ",window_log:",
+                    this->compressor_options().window_log().value());
+  }
+  if (max_parallelism_.has_value()) {
+    absl::StrAppend(&option, ",max_parallelism:", max_parallelism_.value());
+  }
+  return option;
+}
+
 // Thread compatible callback guarded by SequencedChunkWriter's mutex.
 class ArrayRecordWriterBase::SubmitChunkCallback
     : public SequencedChunkWriterBase::SubmitChunkCallback {
  public:
   explicit SubmitChunkCallback(const ArrayRecordWriterBase::Options options)
-      : compression_options_(options.compressor_options()),
-        max_parallelism_(options.max_parallelism().value()) {
+      : options_(options), max_parallelism_(options.max_parallelism().value()) {
     constexpr uint64_t kDefaultDecodedDataSize = (1 << 20);
     last_decoded_data_size_.store(kDefaultDecodedDataSize);
   }
@@ -200,7 +253,7 @@ class ArrayRecordWriterBase::SubmitChunkCallback
   void WriteFooterAndPostscript(SequencedChunkWriterBase* writer);
 
  private:
-  const CompressorOptions compression_options_;
+  const Options options_;
 
   absl::Mutex mu_;
   const int32_t max_parallelism_;
@@ -456,8 +509,11 @@ ArrayRecordWriterBase::SubmitChunkCallback::CreateFooterChunk() {
   footer_metadata.mutable_array_record_metadata()->set_num_chunks(
       array_footer_.size());
   footer_metadata.mutable_array_record_metadata()->set_num_records(num_records);
+  footer_metadata.mutable_array_record_metadata()->set_writer_options(
+      options_.ToString());
   // Perhaps we can compress the footer
-  return ChunkFromSpan(compression_options_, absl::MakeConstSpan(array_footer_),
+  return ChunkFromSpan(options_.compressor_options(),
+                       absl::MakeConstSpan(array_footer_),
                        std::optional(footer_metadata));
 }
 

@@ -194,14 +194,57 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
   {
+    auto option = ArrayRecordWriterBase::Options();
+    EXPECT_EQ(option.group_size(),
+              ArrayRecordWriterBase::Options::kDefaultGroupSize);
+    EXPECT_FALSE(option.transpose());
+    EXPECT_EQ(option.max_parallelism(), std::nullopt);
+    EXPECT_EQ(option.compressor_options().compression_type(),
+              riegeli::CompressionType::kZstd);
+    EXPECT_EQ(option.compressor_options().compression_level(), 3);
+    EXPECT_FALSE(option.pad_to_block_boundary());
+  }
+  {
     auto option = ArrayRecordWriterBase::Options::FromString("").value();
     EXPECT_EQ(option.group_size(),
               ArrayRecordWriterBase::Options::kDefaultGroupSize);
     EXPECT_FALSE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
-              riegeli::CompressionType::kBrotli);
+              riegeli::CompressionType::kZstd);
+    EXPECT_EQ(option.compressor_options().compression_level(), 3);
+    EXPECT_EQ(option.compressor_options().window_log().value(), 20);
     EXPECT_FALSE(option.pad_to_block_boundary());
+
+    EXPECT_EQ(option.ToString(),
+              "group_size:65536,"
+              "transpose:false,"
+              "pad_to_block_boundary:false,"
+              "zstd:3,"
+              "window_log:20");
+    EXPECT_TRUE(
+        ArrayRecordWriterBase::Options::FromString(option.ToString()).ok());
+  }
+  {
+    auto option = ArrayRecordWriterBase::Options::FromString("default").value();
+    EXPECT_EQ(option.group_size(),
+              ArrayRecordWriterBase::Options::kDefaultGroupSize);
+    EXPECT_FALSE(option.transpose());
+    EXPECT_EQ(option.max_parallelism(), std::nullopt);
+    EXPECT_EQ(option.compressor_options().compression_type(),
+              riegeli::CompressionType::kZstd);
+    EXPECT_EQ(option.compressor_options().compression_level(), 3);
+    EXPECT_EQ(option.compressor_options().window_log().value(), 20);
+    EXPECT_FALSE(option.pad_to_block_boundary());
+
+    EXPECT_EQ(option.ToString(),
+              "group_size:65536,"
+              "transpose:false,"
+              "pad_to_block_boundary:false,"
+              "zstd:3,"
+              "window_log:20");
+    EXPECT_TRUE(
+        ArrayRecordWriterBase::Options::FromString(option.ToString()).ok());
   }
   {
     auto option = ArrayRecordWriterBase::Options::FromString(
@@ -211,9 +254,41 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_TRUE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
-              riegeli::CompressionType::kBrotli);
-    EXPECT_EQ(option.compressor_options().brotli_window_log(), 20);
+              riegeli::CompressionType::kZstd);
+    EXPECT_EQ(option.compressor_options().window_log(), 20);
     EXPECT_FALSE(option.pad_to_block_boundary());
+
+    EXPECT_EQ(option.ToString(),
+              "group_size:32,"
+              "transpose:true,"
+              "pad_to_block_boundary:false,"
+              "transpose_bucket_size:256,"
+              "zstd:3,"
+              "window_log:20");
+    EXPECT_TRUE(
+        ArrayRecordWriterBase::Options::FromString(option.ToString()).ok());
+  }
+  {
+    auto option = ArrayRecordWriterBase::Options::FromString(
+                      "brotli:6,group_size:32,transpose,window_log:25")
+                      .value();
+    EXPECT_EQ(option.group_size(), 32);
+    EXPECT_TRUE(option.transpose());
+    EXPECT_EQ(option.max_parallelism(), std::nullopt);
+    EXPECT_EQ(option.compressor_options().compression_type(),
+              riegeli::CompressionType::kBrotli);
+    EXPECT_EQ(option.compressor_options().window_log(), 25);
+    EXPECT_FALSE(option.pad_to_block_boundary());
+
+    EXPECT_EQ(option.ToString(),
+              "group_size:32,"
+              "transpose:true,"
+              "pad_to_block_boundary:false,"
+              "transpose_bucket_size:256,"
+              "brotli:6,"
+              "window_log:25");
+    EXPECT_TRUE(
+        ArrayRecordWriterBase::Options::FromString(option.ToString()).ok());
   }
   {
     auto option = ArrayRecordWriterBase::Options::FromString(
@@ -224,9 +299,19 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
               riegeli::CompressionType::kZstd);
-    EXPECT_EQ(option.compressor_options().zstd_window_log(), 20);
+    EXPECT_EQ(option.compressor_options().window_log(), 20);
     EXPECT_EQ(option.compressor_options().compression_level(), 5);
     EXPECT_FALSE(option.pad_to_block_boundary());
+
+    EXPECT_EQ(option.ToString(),
+              "group_size:32,"
+              "transpose:true,"
+              "pad_to_block_boundary:false,"
+              "transpose_bucket_size:256,"
+              "zstd:5,"
+              "window_log:20");
+    EXPECT_TRUE(
+        ArrayRecordWriterBase::Options::FromString(option.ToString()).ok());
   }
   {
     auto option = ArrayRecordWriterBase::Options::FromString(
@@ -239,6 +324,34 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_EQ(option.compressor_options().compression_type(),
               riegeli::CompressionType::kNone);
     EXPECT_TRUE(option.pad_to_block_boundary());
+
+    EXPECT_EQ(option.ToString(),
+              "group_size:65536,"
+              "transpose:false,"
+              "pad_to_block_boundary:true,"
+              "uncompressed");
+    EXPECT_TRUE(
+        ArrayRecordWriterBase::Options::FromString(option.ToString()).ok());
+  }
+  {
+    auto option = ArrayRecordWriterBase::Options::FromString(
+                      "snappy,pad_to_block_boundary:true")
+                      .value();
+    EXPECT_EQ(option.group_size(),
+              ArrayRecordWriterBase::Options::kDefaultGroupSize);
+    EXPECT_FALSE(option.transpose());
+    EXPECT_EQ(option.max_parallelism(), std::nullopt);
+    EXPECT_EQ(option.compressor_options().compression_type(),
+              riegeli::CompressionType::kSnappy);
+    EXPECT_TRUE(option.pad_to_block_boundary());
+
+    EXPECT_EQ(option.ToString(),
+              "group_size:65536,"
+              "transpose:false,"
+              "pad_to_block_boundary:true,"
+              "snappy");
+    EXPECT_TRUE(
+        ArrayRecordWriterBase::Options::FromString(option.ToString()).ok());
   }
 }
 

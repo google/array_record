@@ -110,6 +110,15 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
   // Once a reader is moved, it is closed.
   ASSERT_FALSE(reader_before_move.is_open());  // NOLINT
 
+  auto recorded_writer_options = ArrayRecordWriterBase::Options::FromString(
+                                     reader.WriterOptionsString().value())
+                                     .value();
+  EXPECT_EQ(writer_options.compression_type(),
+            recorded_writer_options.compression_type());
+  EXPECT_EQ(writer_options.compression_level(),
+            recorded_writer_options.compression_level());
+  EXPECT_EQ(writer_options.transpose(), recorded_writer_options.transpose());
+
   std::vector<uint64_t> indices = {1, 2, 4};
   ASSERT_TRUE(reader
                   .ParallelReadRecordsWithIndices(

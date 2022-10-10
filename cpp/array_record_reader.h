@@ -269,6 +269,9 @@ class ArrayRecordReaderBase : public riegeli::Object {
   // `false` (when `!ok()`)                  - failure
   bool ReadRecord(absl::string_view* record);
 
+  // Returns the writer options if presented.
+  std::optional<std::string> WriterOptionsString() const;
+
  protected:
   explicit ArrayRecordReaderBase(Options options, ARThreadPool* pool);
   ~ArrayRecordReaderBase() override;
