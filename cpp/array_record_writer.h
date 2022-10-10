@@ -83,7 +83,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
  public:
   class Options {
    public:
-    Options() {}
+    Options();
 
     // Parses options from text:
     // ```

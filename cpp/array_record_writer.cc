@@ -31,6 +31,7 @@ limitations under the License.
 #include "absl/base/thread_annotations.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
@@ -62,6 +63,10 @@ constexpr uint32_t kZstdDefaultWindowLog = 20;
 // Magic number for ArrayRecord
 // Generated from `echo 'ArrayRecord' | md5sum | cut -b 1-16`
 constexpr uint64_t kMagic = 0x71930e704fdae05eULL;
+
+// zstd:3 gives a good trade-off for both the compression and decomopression
+// speed.
+constexpr char kArrayRecordDefaultCompression[] = "zstd:3";
 
 using riegeli::Chunk;
 using riegeli::ChunkType;
@@ -109,11 +114,17 @@ absl::StatusOr<Chunk> ChunkFromSpan(CompressorOptions compression_options,
 
 }  // namespace
 
+ArrayRecordWriterBase::Options::Options() {
+  DCHECK_OK(
+      this->compressor_options_.FromString(kArrayRecordDefaultCompression));
+}
+
 // static
 absl::StatusOr<ArrayRecordWriterBase::Options>
 ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
   ArrayRecordWriterBase::Options options;
   OptionsParser options_parser;
+  options_parser.AddOption("default", ValueParser::FailIfAnySeen());
   // Group
   options_parser.AddOption(
       "group_size", ValueParser::Int(1, INT32_MAX, &options.group_size_));
@@ -150,6 +161,15 @@ ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
                         &options.pad_to_block_boundary_));
   if (!options_parser.FromString(text)) {
     return options_parser.status();
+  }
+  // From our benchmarks we figured zstd:3 gives the best trade-off for both the
+  // compression and decomopression speed.
+  if (text == "default" ||
+      (!absl::StrContains(compressor_text, "uncompressed") &&
+       !absl::StrContains(compressor_text, "brotli") &&
+       !absl::StrContains(compressor_text, "snappy") &&
+       !absl::StrContains(compressor_text, "zstd"))) {
+    absl::StrAppend(&compressor_text, ",", kArrayRecordDefaultCompression);
   }
   // max_parallelism is set after options_parser.FromString()
   if (max_parallelism > 0) {

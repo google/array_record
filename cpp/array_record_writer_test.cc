@@ -194,13 +194,26 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
   {
+    auto option = ArrayRecordWriterBase::Options();
+    EXPECT_EQ(option.group_size(),
+              ArrayRecordWriterBase::Options::kDefaultGroupSize);
+    EXPECT_FALSE(option.transpose());
+    EXPECT_EQ(option.max_parallelism(), std::nullopt);
+    EXPECT_EQ(option.compressor_options().compression_type(),
+              riegeli::CompressionType::kZstd);
+    EXPECT_EQ(option.compressor_options().compression_level(), 3);
+    EXPECT_FALSE(option.pad_to_block_boundary());
+  }
+  {
     auto option = ArrayRecordWriterBase::Options::FromString("").value();
     EXPECT_EQ(option.group_size(),
               ArrayRecordWriterBase::Options::kDefaultGroupSize);
     EXPECT_FALSE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
-              riegeli::CompressionType::kBrotli);
+              riegeli::CompressionType::kZstd);
+    EXPECT_EQ(option.compressor_options().compression_level(), 3);
+    EXPECT_EQ(option.compressor_options().window_log().value(), 20);
     EXPECT_FALSE(option.pad_to_block_boundary());
   }
   {
@@ -211,8 +224,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_TRUE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
-              riegeli::CompressionType::kBrotli);
-    EXPECT_EQ(option.compressor_options().brotli_window_log(), 20);
+              riegeli::CompressionType::kZstd);
+    EXPECT_EQ(option.compressor_options().window_log(), 20);
     EXPECT_FALSE(option.pad_to_block_boundary());
   }
   {
@@ -224,7 +237,7 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
               riegeli::CompressionType::kZstd);
-    EXPECT_EQ(option.compressor_options().zstd_window_log(), 20);
+    EXPECT_EQ(option.compressor_options().window_log(), 20);
     EXPECT_EQ(option.compressor_options().compression_level(), 5);
     EXPECT_FALSE(option.pad_to_block_boundary());
   }
