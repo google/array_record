@@ -384,7 +384,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
   if (state_->footer.empty()) {
     return absl::OkStatus();
   }
-  if (end >= NumRecords() || begin >= end) {
+  if (end > NumRecords() || begin >= end) {
     return absl::InvalidArgumentError(absl::StrFormat(
         "Invalid range [%d, %d). Total records: %d", begin, end, NumRecords()));
   }
