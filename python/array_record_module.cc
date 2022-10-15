@@ -125,37 +125,40 @@ PYBIND11_MODULE(array_record_module, m) {
              }
              return py::bytes(string_view);
            })
-      .def(
-          "read",
-          [](ArrayRecordReader& reader, std::vector<uint64_t> indices) {
-            std::vector<py::bytes> output(indices.size());
-            auto status = reader.ParallelReadRecordsWithIndices(
-                indices,
-                [&](uint64_t indices_index,
-                    absl::string_view record_data) -> absl::Status {
-                  output[indices_index] = record_data;
-                  return absl::OkStatus();
-                });
-            if (!status.ok()) {
-              throw std::runtime_error(std::string(status.message()));
-            }
-            return output;
-          },
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "read_all",
-          [](ArrayRecordReader& reader) {
-            std::vector<py::bytes> output(reader.NumRecords());
-            auto status = reader.ParallelReadRecords(
-                [&](uint64_t index,
-                    absl::string_view record_data) -> absl::Status {
-                  output[index] = record_data;
-                  return absl::OkStatus();
-                });
-            if (!status.ok()) {
-              throw std::runtime_error(std::string(status.message()));
-            }
-            return output;
-          },
-          py::call_guard<py::gil_scoped_release>());
+      .def("read",
+           [](ArrayRecordReader& reader, std::vector<uint64_t> indices) {
+             std::vector<py::bytes> output(indices.size());
+             {
+               py::gil_scoped_release gil_released;
+               auto status = reader.ParallelReadRecordsWithIndices(
+                   indices,
+                   [&](uint64_t indices_index,
+                       absl::string_view record_data) -> absl::Status {
+                     py::gil_scoped_acquire gil_acquired;
+                     output[indices_index] = record_data;
+                     return absl::OkStatus();
+                   });
+               if (!status.ok()) {
+                 throw std::runtime_error(std::string(status.message()));
+               }
+             }
+             return output;
+           })
+      .def("read_all", [](ArrayRecordReader& reader) {
+        std::vector<py::bytes> output(reader.NumRecords());
+        {
+          py::gil_scoped_release gil_released;
+          auto status = reader.ParallelReadRecords(
+              [&](uint64_t index,
+                  absl::string_view record_data) -> absl::Status {
+                py::gil_scoped_acquire gil_acquired;
+                output[index] = record_data;
+                return absl::OkStatus();
+              });
+          if (!status.ok()) {
+            throw std::runtime_error(std::string(status.message()));
+          }
+        }
+        return output;
+      });
 }
