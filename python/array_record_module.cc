@@ -125,37 +125,51 @@ PYBIND11_MODULE(array_record_module, m) {
              }
              return py::bytes(string_view);
            })
-      .def(
-          "read",
-          [](ArrayRecordReader& reader, std::vector<uint64_t> indices) {
-            std::vector<py::bytes> output(indices.size());
-            auto status = reader.ParallelReadRecordsWithIndices(
-                indices,
-                [&](uint64_t indices_index,
-                    absl::string_view record_data) -> absl::Status {
-                  output[indices_index] = record_data;
-                  return absl::OkStatus();
-                });
-            if (!status.ok()) {
-              throw std::runtime_error(std::string(status.message()));
-            }
-            return output;
-          },
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "read_all",
-          [](ArrayRecordReader& reader) {
-            std::vector<py::bytes> output(reader.NumRecords());
-            auto status = reader.ParallelReadRecords(
-                [&](uint64_t index,
-                    absl::string_view record_data) -> absl::Status {
-                  output[index] = record_data;
-                  return absl::OkStatus();
-                });
-            if (!status.ok()) {
-              throw std::runtime_error(std::string(status.message()));
-            }
-            return output;
-          },
-          py::call_guard<py::gil_scoped_release>());
+      .def("read",
+           [](ArrayRecordReader& reader, std::vector<uint64_t> indices) {
+             std::vector<std::string> staging(indices.size());
+             py::list output(indices.size());
+             {
+               py::gil_scoped_release scoped_release;
+               auto status = reader.ParallelReadRecordsWithIndices(
+                   indices,
+                   [&](uint64_t indices_index,
+                       absl::string_view record_data) -> absl::Status {
+                     staging[indices_index] = record_data;
+                     return absl::OkStatus();
+                   });
+               if (!status.ok()) {
+                 throw std::runtime_error(std::string(status.message()));
+               }
+             }
+             ssize_t index = 0;
+             for (const auto& record : staging) {
+               auto py_record = py::bytes(record);
+               PyList_SET_ITEM(output.ptr(), index++,
+                               py_record.release().ptr());
+             }
+             return output;
+           })
+      .def("read_all", [](ArrayRecordReader& reader) {
+        std::vector<std::string> staging(reader.NumRecords());
+        py::list output(reader.NumRecords());
+        {
+          py::gil_scoped_release scoped_release;
+          auto status = reader.ParallelReadRecords(
+              [&](uint64_t index,
+                  absl::string_view record_data) -> absl::Status {
+                staging[index] = record_data;
+                return absl::OkStatus();
+              });
+          if (!status.ok()) {
+            throw std::runtime_error(std::string(status.message()));
+          }
+        }
+        ssize_t index = 0;
+        for (const auto& record : staging) {
+          auto py_record = py::bytes(record);
+          PyList_SET_ITEM(output.ptr(), index++, py_record.release().ptr());
+        }
+        return output;
+      });
 }
