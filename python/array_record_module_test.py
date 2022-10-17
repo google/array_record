@@ -94,6 +94,32 @@ class ArrayRecordModuleTest(absltest.TestCase):
     batch_fetch = reader.read(indices)
     self.assertEqual(expected, batch_fetch)
 
+  def test_read_range(self):
+    writer = ArrayRecordWriter(self.test_file)
+    test_strs = [b'abc', b'def', b'ghi', b'kkk', b'...']
+    for s in test_strs:
+      writer.write(s)
+    writer.close()
+    reader = ArrayRecordReader(self.test_file)
+
+    def invalid_range1():
+      reader.read(0, 0)
+
+    self.assertRaises(IndexError, invalid_range1)
+
+    def invalid_range2():
+      reader.read(0, 100)
+
+    self.assertRaises(IndexError, invalid_range2)
+
+    def invalid_range3():
+      reader.read(3, 2)
+
+    self.assertRaises(IndexError, invalid_range3)
+
+    self.assertEqual(reader.read(0, -1), test_strs[0:-1])
+    self.assertEqual(reader.read(-3, -1), test_strs[-3:-1])
+    self.assertEqual(reader.read(1, 3), test_strs[1:3])
 
 if __name__ == '__main__':
   absltest.main()

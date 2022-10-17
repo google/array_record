@@ -150,6 +150,46 @@ PYBIND11_MODULE(array_record_module, m) {
              }
              return output;
            })
+      .def("read",
+           [](ArrayRecordReader& reader, int32_t begin, int32_t end) {
+             int32_t range_begin = begin, range_end = end;
+             if (range_begin < 0) {
+               range_begin = reader.NumRecords() + range_begin;
+             }
+             if (range_end < 0) {
+               range_end = reader.NumRecords() + range_end;
+             }
+             if (range_begin > reader.NumRecords() || range_begin < 0 ||
+                 range_end > reader.NumRecords() || range_end < 0 ||
+                 range_end <= range_begin) {
+               throw std::out_of_range(
+                   absl::StrFormat("[%d, %d) is of range of [0, %d)", begin,
+                                   end, reader.NumRecords()));
+             }
+             int32_t num_to_read = range_end - range_begin;
+             std::vector<std::string> staging(num_to_read);
+             py::list output(num_to_read);
+             {
+               py::gil_scoped_release scoped_release;
+               auto status = reader.ParallelReadRecordsInRange(
+                   range_begin, range_end,
+                   [&](uint64_t index,
+                       absl::string_view record_data) -> absl::Status {
+                     staging[index - range_begin] = record_data;
+                     return absl::OkStatus();
+                   });
+               if (!status.ok()) {
+                 throw std::runtime_error(std::string(status.message()));
+               }
+             }
+             ssize_t index = 0;
+             for (const auto& record : staging) {
+               auto py_record = py::bytes(record);
+               PyList_SET_ITEM(output.ptr(), index++,
+                               py_record.release().ptr());
+             }
+             return output;
+           })
       .def("read_all", [](ArrayRecordReader& reader) {
         std::vector<std::string> staging(reader.NumRecords());
         py::list output(reader.NumRecords());
