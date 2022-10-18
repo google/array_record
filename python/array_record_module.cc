@@ -106,6 +106,7 @@ PYBIND11_MODULE(array_record_module, m) {
       .def("is_open", &ArrayRecordReader::is_open)
       .def("num_records", &ArrayRecordReader::NumRecords)
       .def("record_index", &ArrayRecordReader::RecordIndex)
+      .def("writer_options_string", &ArrayRecordReader::WriterOptionsString)
       .def("seek",
            [](ArrayRecordReader& reader, int64_t record_index) {
              if (!reader.SeekRecord(record_index)) {
