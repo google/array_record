@@ -153,6 +153,7 @@ cc_library(
         ":thread_pool",
         "@com_google_protobuf//:protobuf_lite",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/functional:bind_front",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status",
@@ -167,7 +168,6 @@ cc_library(
         "@com_google_riegeli//riegeli/chunk_encoding:chunk_decoder",
         "@com_google_riegeli//riegeli/records:chunk_reader",
         "@com_google_riegeli//riegeli/records:record_position",
-        "@com_google_riegeli//riegeli/records:record_reader",
     ],
 )
 
