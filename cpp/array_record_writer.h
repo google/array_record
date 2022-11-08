@@ -69,7 +69,6 @@ limitations under the License.
 #include "cpp/common.h"
 #include "cpp/sequenced_chunk_writer.h"
 #include "cpp/thread_pool.h"
-#include "riegeli/base/base.h"
 #include "riegeli/base/object.h"
 #include "riegeli/chunk_encoding/chunk.h"
 #include "riegeli/chunk_encoding/chunk_encoder.h"

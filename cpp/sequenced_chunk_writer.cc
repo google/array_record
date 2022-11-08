@@ -27,8 +27,8 @@ limitations under the License.
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "absl/synchronization/mutex.h"
-#include "riegeli/base/base.h"
 #include "riegeli/base/status.h"
+#include "riegeli/base/types.h"
 #include "riegeli/chunk_encoding/chunk.h"
 #include "riegeli/chunk_encoding/constants.h"
 

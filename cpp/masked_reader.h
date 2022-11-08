@@ -20,7 +20,8 @@ limitations under the License.
 #include <string>
 
 #include "absl/types/optional.h"
-#include "riegeli/base/base.h"
+#include "riegeli/base/object.h"
+#include "riegeli/base/types.h"
 #include "riegeli/bytes/reader.h"
 
 namespace array_record {

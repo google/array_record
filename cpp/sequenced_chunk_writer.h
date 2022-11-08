@@ -36,7 +36,6 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "cpp/common.h"
-#include "riegeli/base/base.h"
 #include "riegeli/base/object.h"
 #include "riegeli/bytes/writer.h"
 #include "riegeli/chunk_encoding/chunk.h"

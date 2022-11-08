@@ -24,8 +24,9 @@ limitations under the License.
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "cpp/common.h"
-#include "riegeli/base/base.h"
+#include "riegeli/base/object.h"
 #include "riegeli/base/status.h"
+#include "riegeli/base/types.h"
 
 namespace array_record {
 
