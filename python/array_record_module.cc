@@ -52,9 +52,8 @@ PYBIND11_MODULE(array_record_module, m) {
                throw std::runtime_error(
                    std::string(file_writer->status().message()));
              }
-             return array_record::ArrayRecordWriter<
-                 std::unique_ptr<riegeli::Writer>>(std::move(file_writer),
-                                                   status_or_option.value());
+             return ArrayRecordWriter(std::move(file_writer),
+                                      status_or_option.value());
            }),
            py::arg("path"), py::arg("options") = "")
       .def("ok", &ArrayRecordWriter::ok)
@@ -75,8 +74,7 @@ PYBIND11_MODULE(array_record_module, m) {
         }
       });
 
-  py::class_<array_record::ArrayRecordReader<std::unique_ptr<riegeli::Reader>>>(
-      m, "ArrayRecordReader")
+  py::class_<ArrayRecordReader>(m, "ArrayRecordReader")
       .def(py::init([](const std::string& path, const std::string& options) {
              auto status_or_option =
                  array_record::ArrayRecordReaderBase::Options::FromString(
@@ -90,10 +88,9 @@ PYBIND11_MODULE(array_record_module, m) {
                throw std::runtime_error(
                    std::string(file_reader->status().message()));
              }
-             return array_record::ArrayRecordReader<
-                 std::unique_ptr<riegeli::Reader>>(
-                 std::move(file_reader), status_or_option.value(),
-                 array_record::ArrayRecordGlobalPool());
+             return ArrayRecordReader(std::move(file_reader),
+                                      status_or_option.value(),
+                                      array_record::ArrayRecordGlobalPool());
            }),
            py::arg("path"), py::arg("options") = "")
       .def("ok", &ArrayRecordReader::ok)
