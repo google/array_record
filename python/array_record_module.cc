@@ -46,12 +46,17 @@ PYBIND11_MODULE(array_record_module, m) {
                throw py::value_error(
                    std::string(status_or_option.status().message()));
              }
-             auto file_writer = std::make_unique<riegeli::FdWriter<>>(path);
+             std::unique_ptr<riegeli::FdWriter<>> file_writer;
+             {
+               py::gil_scoped_release scoped_release;
+               file_writer = std::make_unique<riegeli::FdWriter<>>(path);
+             }
 
              if (!file_writer->ok()) {
                throw std::runtime_error(
                    std::string(file_writer->status().message()));
              }
+             py::gil_scoped_release scoped_release;
              return ArrayRecordWriter(std::move(file_writer),
                                       status_or_option.value());
            }),
@@ -83,11 +88,16 @@ PYBIND11_MODULE(array_record_module, m) {
                throw py::value_error(
                    std::string(status_or_option.status().message()));
              }
-             auto file_reader = std::make_unique<riegeli::FdReader<>>(path);
+             std::unique_ptr<riegeli::FdReader<>> file_reader;
+             {
+               py::gil_scoped_release scoped_release;
+               file_reader = std::make_unique<riegeli::FdReader<>>(path);
+             }
              if (!file_reader->ok()) {
                throw std::runtime_error(
                    std::string(file_reader->status().message()));
              }
+             py::gil_scoped_release scoped_release;
              return ArrayRecordReader(std::move(file_reader),
                                       status_or_option.value(),
                                       array_record::ArrayRecordGlobalPool());
