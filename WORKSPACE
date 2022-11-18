@@ -3,14 +3,13 @@ workspace(name = "com_google_array_record")
 # Might be better than http_archive
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-# Abseil LTS 20211102
+# Abseil LTS 20220623.1
 http_archive(
     name = "com_google_absl",
-    sha256 = "237e2e6aec7571ae90d961d02de19f56861a7417acbbc15713b8926e39d461ed",  # SHARED_ABSL_SHA
-    strip_prefix = "abseil-cpp-215105818dfde3174fe799600bb0f3cae233d0bf",
+    sha256 = "91ac87d30cc6d79f9ab974c51874a704de9c2647c40f6932597329a282217ba8",  # SHARED_ABSL_SHA
+    strip_prefix = "abseil-cpp-20220623.1",
     urls = [
-        "https://storage.googleapis.com/mirror.tensorflow.org/github.com/abseil/abseil-cpp/archive/215105818dfde3174fe799600bb0f3cae233d0bf.tar.gz",
-        "https://github.com/abseil/abseil-cpp/archive/215105818dfde3174fe799600bb0f3cae233d0bf.tar.gz",
+        "https://github.com/abseil/abseil-cpp/archive/refs/tags/20220623.1.tar.gz",
     ],
 )
 http_archive(
