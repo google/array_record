@@ -115,8 +115,8 @@ absl::StatusOr<Chunk> ChunkFromSpan(CompressorOptions compression_options,
 }  // namespace
 
 ArrayRecordWriterBase::Options::Options() {
-  DCHECK_OK(
-      this->compressor_options_.FromString(kArrayRecordDefaultCompression));
+  this->compressor_options_.FromString(kArrayRecordDefaultCompression)
+      .IgnoreError();
 }
 
 // static
