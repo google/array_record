@@ -52,6 +52,7 @@ http_archive(
   name = "pybind11",
   build_file = "@pybind11_bazel//:pybind11.BUILD",
   strip_prefix = "pybind11-2.9.2",
+  sha256 = "d1646e6f70d8a3acb2ddd85ce1ed543b5dd579c68b8fb8e9638282af20edead8",
   urls = ["https://github.com/pybind/pybind11/archive/refs/tags/v2.9.2.zip"],
 )
 load("@pybind11_bazel//:python_configure.bzl", "python_configure")
@@ -133,3 +134,16 @@ http_archive(
     strip_prefix = "highwayhash-276dd7b4b6d330e4734b756e97ccfb1b69cc2e12",
     urls = ["https://github.com/google/highwayhash/archive/276dd7b4b6d330e4734b756e97ccfb1b69cc2e12.zip"],  # 2019-02-22
 )
+
+
+http_archive(
+    name = "org_tensorflow",
+    strip_prefix = "tensorflow-2.10.0",
+    sha256 = "d79a95ede8305f14a10dd0409a1e5a228849039c19ccfb90dfe8367295fd04e0",
+    urls = ["https://github.com/tensorflow/tensorflow/archive/v2.10.0.zip"],
+)
+
+# This import (along with the org_tensorflow archive) is necessary to provide the devtoolset-9 toolchain
+load("@org_tensorflow//tensorflow/tools/toolchains/remote_config:configs.bzl", "initialize_rbe_configs")  # buildifier: disable=load-on-top
+
+initialize_rbe_configs()
