@@ -66,14 +66,20 @@ class ArrayRecordReaderBase : public riegeli::Object {
     //   option ::=
     //     "readahead_buffer_size" ":" readahead_buffer_size |
     //     "max_parallelism" ":" max_parallelism
-    //   readahead_buffer_size ::= positive integer expressed as real with
-    //     optional suffix [BkKMGTPE]. (Default 16MB).
-    //   max_parallelism ::= `auto` or positive integer. Each parallel thread
+    //   readahead_buffer_size ::= non-negative integer expressed as real with
+    //     optional suffix [BkKMGTPE]. (Default 16MB). Set to 0 optimizes random
+    //     access performance.
+    //   max_parallelism ::= `auto` or non-negative integer. Each parallel
+    //   thread
     //     owns its readhaed buffer with the size `readahead_buffer_size`.
-    //     (Default thread pool size)
+    //     (Default thread pool size) Set to 0 optimizes random access
+    //     performance.
     // ```
     static absl::StatusOr<Options> FromString(absl::string_view text);
 
+    // Readahead speeds up sequential reads, but harms random access. When using
+    // ArrayRecord for random access, user should configure the buffer size with
+    // 0.
     static constexpr uint64_t kDefaultReadaheadBufferSize = 1L << 24;
     Options& set_readahead_buffer_size(uint64_t readahead_buffer_size) {
       readahead_buffer_size_ = readahead_buffer_size;
@@ -81,8 +87,8 @@ class ArrayRecordReaderBase : public riegeli::Object {
     }
     uint64_t readahead_buffer_size() const { return readahead_buffer_size_; }
 
-    // Specifies max number of concurrent chunk encoders allowed. Default to the
-    // thread pool size.
+    // Specifies max number of concurrent readaheads. Setting max_parallelism to
+    // 0 disables readaheads prefetching.
     Options& set_max_parallelism(std::optional<uint32_t> max_parallelism) {
       max_parallelism_ = max_parallelism;
       return *this;

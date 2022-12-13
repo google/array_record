@@ -81,24 +81,24 @@ ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
   ArrayRecordReaderBase::Options options;
   OptionsParser options_parser;
   // Parallelism
-  int32_t max_parallelism = 0;
+  int32_t max_parallelism = -1;
   options_parser.AddOption(
       "max_parallelism",
       ValueParser::Or(ValueParser::Enum({{"auto", std::nullopt}},
                                         &options.max_parallelism_),
-                      ValueParser::Int(1, INT32_MAX, &max_parallelism)));
+                      ValueParser::Int(0, INT32_MAX, &max_parallelism)));
   // ReadaheadBuffer
   options_parser.AddOption(
       "readahead_buffer_size",
       ValueParser::Or(
           ValueParser::Enum({{"auto", kDefaultReadaheadBufferSize}},
                             &options.readahead_buffer_size_),
-          ValueParser::Bytes(1, std::numeric_limits<uint64_t>::max(),
+          ValueParser::Bytes(0, std::numeric_limits<uint64_t>::max(),
                              &options.readahead_buffer_size_)));
   if (!options_parser.FromString(text)) {
     return options_parser.status();
   }
-  if (max_parallelism > 0) {
+  if (max_parallelism >= 0) {
     options.set_max_parallelism(max_parallelism);
   }
   return options;
@@ -288,6 +288,10 @@ void ArrayRecordReaderBase::Initialize() {
         Fail(InvalidArgumentError("Invalid footer"));
         return;
       }
+      // Finds minimal chunk_group_size that is larger equals to the readahead
+      // buffer. A chunk_group corresponds to a PRead call. Smaller
+      // chunk_group_size is better for random access, the converse is better
+      // for sequential reads.
       for (auto i : Seq(state_->footer.size())) {
         uint64_t buf_size =
             state_->ChunkEndOffset(i) - state_->footer.front().chunk_offset();
@@ -645,7 +649,8 @@ bool ArrayRecordReaderBase::ReadRecord(absl::string_view* record) {
 }
 
 bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
-  if (!state_->pool) {
+  uint64_t max_parallelism = state_->options.max_parallelism().value();
+  if (!state_->pool || max_parallelism == 0) {
     std::vector<ChunkDecoder> decoders;
     decoders.reserve(state_->chunk_group_size);
     uint64_t chunk_start = buffer_idx * state_->chunk_group_size;
@@ -667,7 +672,6 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
          buffer_idx != state_->future_decoders.front().first) {
     state_->future_decoders.pop();
   }
-  uint64_t max_parallelism = state_->options.max_parallelism().value();
 
   // Used for running one extra task in this thread.
   std::function<void()> current_task = []{};

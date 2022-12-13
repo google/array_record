@@ -59,7 +59,9 @@ class ArrayRecordModuleTest(absltest.TestCase):
     for s in test_strs:
       writer.write(s)
     writer.close()
-    reader = ArrayRecordReader(self.test_file)
+    reader = ArrayRecordReader(
+        self.test_file, "readahead_buffer_size:0,max_parallelism:0"
+    )
     num_strs = len(test_strs)
     self.assertEqual(reader.num_records(), num_strs)
     self.assertEqual(reader.record_index(), 0)

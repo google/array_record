@@ -102,7 +102,29 @@ PYBIND11_MODULE(array_record_module, m) {
                                       status_or_option.value(),
                                       array_record::ArrayRecordGlobalPool());
            }),
-           py::arg("path"), py::arg("options") = "")
+           py::arg("path"), py::arg("options") = "", R"(
+           ArrayRecordReader for fast sequential or random access.
+
+           Args:
+               path: File path to the input file.
+               options: String with following syntax.
+
+           options ::= option? ("," option?)*
+           option ::=
+             "readahead_buffer_size" ":" readahead_buffer_size |
+             "max_parallelism" ":" max_parallelism
+           readahead_buffer_size ::= non-negative integer expressed as real with
+             optional suffix [BkKMGTPE]. (Default 16MB). Set to 0 optimizes
+             random access performance.
+           max_parallelism ::= `auto` or non-negative integer. Each parallel
+             thread owns its readhaed buffer with the size
+             `readahead_buffer_size`.  (Default thread pool size) Set to 0
+             optimizes random access performance.
+
+           The default option is optimized for sequential access. To optimize
+           the random access performance, set the options to
+           "readahead_buffer_size:0,max_parallelism:0".
+           )")
       .def("ok", &ArrayRecordReader::ok)
       .def("close",
            [](ArrayRecordReader& reader) {

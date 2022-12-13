@@ -48,8 +48,10 @@ enum class CompressionType { kUncompressed, kBrotli, kZstd, kSnappy };
 //   CompressionType
 //   transpose
 //   use_thread_pool
+//   optimize_for_random_access
 class ArrayRecordReaderTest
-    : public testing::TestWithParam<std::tuple<CompressionType, bool, bool>> {
+    : public testing::TestWithParam<
+          std::tuple<CompressionType, bool, bool, bool>> {
  public:
   ARThreadPool* get_pool() { return ArrayRecordGlobalPool(); }
   ArrayRecordWriterBase::Options GetWriterOptions() {
@@ -74,6 +76,7 @@ class ArrayRecordReaderTest
 
   bool transpose() { return std::get<1>(GetParam()); }
   bool use_thread_pool() { return std::get<2>(GetParam()); }
+  bool optimize_for_random_access() { return std::get<3>(GetParam()); }
 };
 
 TEST_P(ArrayRecordReaderTest, MoveTest) {
@@ -89,8 +92,14 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
   }
   ASSERT_TRUE(writer.Close());
 
+  auto reader_opt = ArrayRecordReaderBase::Options();
+  if (optimize_for_random_access()) {
+    reader_opt.set_max_parallelism(0);
+    reader_opt.set_readahead_buffer_size(0);
+  }
+
   auto reader_before_move = ArrayRecordReader<riegeli::StringReader<>>(
-      std::forward_as_tuple(encoded), ArrayRecordReaderBase::Options(),
+      std::forward_as_tuple(encoded), reader_opt,
       use_thread_pool() ? get_pool() : nullptr);
   ASSERT_TRUE(reader_before_move.status().ok());
 
@@ -172,9 +181,14 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
   }
   ASSERT_TRUE(writer.Close());
 
+  auto reader_opt = ArrayRecordReaderBase::Options();
+  if (optimize_for_random_access()) {
+    reader_opt.set_max_parallelism(0);
+    reader_opt.set_readahead_buffer_size(0);
+  }
+
   auto reader = ArrayRecordReader<riegeli::StringReader<>>(
-      std::forward_as_tuple(encoded),
-      ArrayRecordReaderBase::Options().set_readahead_buffer_size(2048),
+      std::forward_as_tuple(encoded), reader_opt,
       use_thread_pool() ? get_pool() : nullptr);
   ASSERT_TRUE(reader.status().ok());
   EXPECT_EQ(reader.NumRecords(), kDatasetSize);
@@ -254,7 +268,7 @@ INSTANTIATE_TEST_SUITE_P(
                                      CompressionType::kBrotli,
                                      CompressionType::kZstd,
                                      CompressionType::kSnappy),
-                     testing::Bool(), testing::Bool()));
+                     testing::Bool(), testing::Bool(), testing::Bool()));
 
 TEST(ArrayRecordReaderOptionTest, ParserTest) {
   {
@@ -277,6 +291,13 @@ TEST(ArrayRecordReaderOptionTest, ParserTest) {
                       .value();
     EXPECT_EQ(option.max_parallelism(), 16);
     EXPECT_EQ(option.readahead_buffer_size(), 16384);
+  }
+  {
+    auto option = ArrayRecordReaderBase::Options::FromString(
+                      "max_parallelism:0,readahead_buffer_size:0")
+                      .value();
+    EXPECT_EQ(option.max_parallelism(), 0);
+    EXPECT_EQ(option.readahead_buffer_size(), 0);
   }
 }
 
