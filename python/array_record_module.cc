@@ -80,7 +80,8 @@ PYBIND11_MODULE(array_record_module, m) {
       });
 
   py::class_<ArrayRecordReader>(m, "ArrayRecordReader")
-      .def(py::init([](const std::string& path, const std::string& options) {
+      .def(py::init([](const std::string& path, const std::string& options,
+                       const std::optional<int64_t> file_reader_buffer_size) {
              auto status_or_option =
                  array_record::ArrayRecordReaderBase::Options::FromString(
                      options);
@@ -89,9 +90,15 @@ PYBIND11_MODULE(array_record_module, m) {
                    std::string(status_or_option.status().message()));
              }
              std::unique_ptr<riegeli::FdReader<>> file_reader;
+             riegeli::FdReaderBase::Options file_reader_options;
              {
                py::gil_scoped_release scoped_release;
-               file_reader = std::make_unique<riegeli::FdReader<>>(path);
+               riegeli::FileReaderBase::Options file_reader_options;
+               if (file_reader_buffer_size.has_value()) {
+                 file_reader_options.set_buffer_size(*file_reader_buffer_size);
+               }
+               file_reader = std::make_unique<riegeli::FdReader<>>(path,
+               file_reader_options);
              }
              if (!file_reader->ok()) {
                throw std::runtime_error(
@@ -102,12 +109,16 @@ PYBIND11_MODULE(array_record_module, m) {
                                       status_or_option.value(),
                                       array_record::ArrayRecordGlobalPool());
            }),
-           py::arg("path"), py::arg("options") = "", R"(
+           py::arg("path"), py::arg("options") = "",
+           py::arg("file_reader_buffer_size") = std::nullopt, R"(
            ArrayRecordReader for fast sequential or random access.
 
            Args:
                path: File path to the input file.
-               options: String with following syntax.
+               options: String with options for ArrayRecord. See syntax below.
+               file_reader_buffer_size: Optional size of the buffer (in bytes)
+                 for the underlying file (Riegeli) reader. The default buffer
+                 size is 1 MiB.
 
            options ::= option? ("," option?)*
            option ::=
