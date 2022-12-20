@@ -147,7 +147,7 @@ TEST(SequencedChunkWriterTest, SanityTestCodeSnippet) {
   }
   // Calling SubmitFutureChunks(true) blocks the current thread until all
   // encoding tasks complete.
-  EXPECT_TRUE(writer->SubmitFutureChunks(true));
+  EXPECT_TRUE(writer->SubmitFutureChunks());
   // Paddings should not cause any failure.
   EXPECT_TRUE(writer->Close());
 
@@ -191,11 +191,8 @@ TEST(SequencedChunkWriterTest, SanityTestBadChunk) {
   std::packaged_task<absl::StatusOr<riegeli::Chunk>()> encoding_task(
       [] { return absl::InternalError("On purpose"); });
   EXPECT_TRUE(writer->CommitFutureChunk(encoding_task.get_future()));
-  EXPECT_TRUE(writer->SubmitFutureChunks(false));
   encoding_task();
-  // We should see the error being populated even when we try to run it with the
-  // non-blocking version.
-  EXPECT_FALSE(writer->SubmitFutureChunks(false));
+  EXPECT_FALSE(writer->SubmitFutureChunks());
   EXPECT_EQ(writer->status().code(), absl::StatusCode::kInternal);
 
   EXPECT_FALSE(writer->Close());

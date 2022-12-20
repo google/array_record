@@ -122,6 +122,7 @@ cc_library(
         "@com_google_riegeli//riegeli/chunk_encoding:simple_encoder",
         "@com_google_riegeli//riegeli/chunk_encoding:transpose_encoder",
         "@com_google_riegeli//riegeli/records:records_metadata_cc_proto",
+        "//util/callback:callback_stream",
     ],
 )
 
@@ -211,7 +212,6 @@ cc_test(
     name = "array_record_writer_test",
     srcs = ["array_record_writer_test.cc"],
     shard_count = 4,
-    tags = ["notsan"],
     deps = [
         ":array_record_writer",
         ":common",

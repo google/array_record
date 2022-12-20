@@ -76,6 +76,7 @@ class ArrayRecordWriterTest
 template <typename T>
 void SilenceMoveAfterUseForTest(T&) {}
 
+
 TEST_P(ArrayRecordWriterTest, MoveTest) {
   std::string encoded;
   ARThreadPool* pool = nullptr;
@@ -117,7 +118,7 @@ TEST_P(ArrayRecordWriterTest, MoveTest) {
 
 TEST_P(ArrayRecordWriterTest, RandomDatasetTest) {
   std::mt19937 bitgen;
-  constexpr uint32_t kGroupSize = 100;
+  constexpr uint32_t kGroupSize = 1;
   constexpr uint32_t num_records = 1357;
   std::vector<std::string> records(num_records);
   std::uniform_int_distribution<> dist(0, 123);

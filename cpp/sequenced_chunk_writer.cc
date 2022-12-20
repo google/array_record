@@ -44,32 +44,10 @@ bool SequencedChunkWriterBase::CommitFutureChunk(
   return true;
 }
 
-bool SequencedChunkWriterBase::SubmitFutureChunks(bool block) {
-  // We need to use TryLock to prevent deadlock.
-  //
-  // std::future::get() blocks if the result wasn't ready.
-  // Hence the following scenario triggers a deadlock.
-  // T1:
-  //   SubmitFutureChunks(true)
-  //   mu_ holds
-  //   Blocks on queue_.front().get();
-  // T2:
-  //   In charge to fulfill the future of queue_.front() on its exit.
-  //   SubmitFutureChunks(false)
-  //   Blocks on mu_ if we used mu_.Lock() instead of mu_.TryLock()
-  if (block) {
-    mu_.Lock();
-  } else if (!mu_.TryLock()) {
-    return true;
-  }
+bool SequencedChunkWriterBase::SubmitFutureChunks() {
+  absl::MutexLock l(&mu_);
   auto* chunk_writer = get_writer();
   while (!queue_.empty()) {
-    if (!block) {
-      if (queue_.front().wait_for(std::chrono::microseconds::zero()) !=
-          std::future_status::ready) {
-        break;
-      }
-    }
     auto status_or_chunk = queue_.front().get();
     queue_.pop();
 
@@ -115,7 +93,6 @@ bool SequencedChunkWriterBase::SubmitFutureChunks(bool block) {
     }
     submitted_chunks_++;
   }
-  mu_.Unlock();
   return ok();
 }
 
@@ -134,7 +111,7 @@ void SequencedChunkWriterBase::Initialize() {
 }
 
 void SequencedChunkWriterBase::Done() {
-  SubmitFutureChunks(true);
+  SubmitFutureChunks();
   auto* chunk_writer = get_writer();
   if (!chunk_writer->Close()) {
     Fail(riegeli::Annotate(chunk_writer->status(),

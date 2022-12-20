@@ -106,32 +106,7 @@ class SequencedChunkWriterBase : public riegeli::Object {
       std::future<absl::StatusOr<riegeli::Chunk>>&& future_chunk);
 
   // Extracts the future chunks and submits them to the underlying destination.
-  // This operation may block if the argument `block` was true. This method is
-  // thread-safe, and we recommend users invoke it with `block=false` in each
-  // thread to reduce the temporal memory usage.
-  //
-  // Example 1: single thread usage
-  //
-  //     std::promise<absl::StatusOr<riegeli::Chunk>> chunk_promise;
-  //     RET_CHECK(sequenced_chunk_writer->CommitFutureChunk(
-  //         chunk_promise.get_future())) << sequenced_chunk_writer->status();
-  //     chunk_promise.set_value(ComputesChunk());
-  //     RET_CHECK(writer->SubmitFutureChunks(true)) << writer->status();
-  //
-  // Example 2: concurrent access
-  //
-  //     auto writer = std::make_shared<SequencedChunkWriter<>(...)
-  //
-  //     pool->Schedule([writer,
-  //                     chunk_promise = std::move(chunk_promise)]()  mutable {
-  //       chunk_promise.set_value(status_or_chunk);
-  //       // Should not block otherwise would enter deadlock!
-  //       writer->SubmitFutureChunks(false);
-  //     });
-  //     // Blocking the main thread is fine.
-  //     RET_CHECK(writer->SubmitFutureChunks(true)) << writer->status();
-  //
-  bool SubmitFutureChunks(bool block = false);
+  bool SubmitFutureChunks();
 
   // Pads to 64KB boundary for future chunk submission. (Default false).
   void set_pad_to_block_boundary(bool pad_to_block_boundary) {

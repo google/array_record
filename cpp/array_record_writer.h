@@ -70,10 +70,10 @@ limitations under the License.
 #include "cpp/sequenced_chunk_writer.h"
 #include "cpp/thread_pool.h"
 #include "riegeli/base/object.h"
-#include "riegeli/chunk_encoding/chunk.h"
 #include "riegeli/chunk_encoding/chunk_encoder.h"
 #include "riegeli/chunk_encoding/compressor_options.h"
 #include "riegeli/records/records_metadata.pb.h"
+#include "util/callback/callback_stream.h"
 
 namespace array_record {
 
@@ -120,7 +120,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
       group_size_ = group_size;
       return *this;
     }
-    const uint32_t group_size() const { return group_size_; }
+    uint32_t group_size() const { return group_size_; }
 
     // Specifies max number of concurrent chunk encoders allowed. Default to the
     // thread pool size.
@@ -291,14 +291,13 @@ class ArrayRecordWriterBase : public riegeli::Object {
   }
 
  protected:
-  ArrayRecordWriterBase(Options options, ARThreadPool* pool);
+  ArrayRecordWriterBase(Options options, ARThreadPool* pool,
+                        std::unique_ptr<SequencedChunkWriterBase> writer);
   ~ArrayRecordWriterBase() override;
 
   // Move only, but we need to override the default for closing the rvalues.
   ArrayRecordWriterBase(ArrayRecordWriterBase&& other) noexcept;
   ArrayRecordWriterBase& operator=(ArrayRecordWriterBase&& other) noexcept;
-
-  virtual std::shared_ptr<SequencedChunkWriterBase> get_writer() = 0;
 
   // Initializes and validates the underlying writer states.
   void Initialize();
@@ -319,6 +318,8 @@ class ArrayRecordWriterBase : public riegeli::Object {
   ARThreadPool* pool_;
   std::unique_ptr<riegeli::ChunkEncoder> chunk_encoder_;
   std::unique_ptr<SubmitChunkCallback> submit_chunk_callback_;
+  std::unique_ptr<SequencedChunkWriterBase> writer_;
+  CallbackStream* cb_stream_ = nullptr;
 };
 
 // `ArrayRecordWriter` use templated backend abstraction. To serialize the
@@ -363,8 +364,9 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
   // Ctor by taking the ownership of the other riegeli writer.
   explicit ArrayRecordWriter(Dest&& dest, Options options = Options(),
                              ARThreadPool* pool = nullptr)
-      : ArrayRecordWriterBase(std::move(options), pool),
-        dest_(std::make_shared<SequencedChunkWriter<Dest>>(std::move(dest))) {
+      : ArrayRecordWriterBase(
+            std::move(options), pool,
+            std::make_unique<SequencedChunkWriter<Dest>>(std::move(dest))) {
     Initialize();
   }
 
@@ -373,17 +375,11 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
   explicit ArrayRecordWriter(std::tuple<DestArgs...> dest_args,
                              Options options = Options(),
                              ARThreadPool* pool = nullptr)
-      : ArrayRecordWriterBase(std::move(options), pool),
-        dest_(std::make_shared<SequencedChunkWriter<Dest>>(
-            std::move(dest_args))) {
+      : ArrayRecordWriterBase(std::move(options), pool,
+                              std::make_unique<SequencedChunkWriter<Dest>>(
+                                  std::move(dest_args))) {
     Initialize();
   }
-
- protected:
-  std::shared_ptr<SequencedChunkWriterBase> get_writer() final { return dest_; }
-
- private:
-  std::shared_ptr<SequencedChunkWriter<Dest>> dest_;
 };
 
 }  // namespace array_record

@@ -49,6 +49,7 @@ limitations under the License.
 #include "riegeli/chunk_encoding/deferred_encoder.h"
 #include "riegeli/chunk_encoding/simple_encoder.h"
 #include "riegeli/chunk_encoding/transpose_encoder.h"
+#include "util/callback/callback_stream.h"
 
 namespace array_record {
 
@@ -275,10 +276,15 @@ class ArrayRecordWriterBase::SubmitChunkCallback
   std::vector<ArrayRecordFooter> array_footer_;
 };
 
-ArrayRecordWriterBase::ArrayRecordWriterBase(Options options,
-                                             ARThreadPool* pool)
-    : options_(std::move(options)), pool_(pool) {}
-ArrayRecordWriterBase::~ArrayRecordWriterBase() = default;
+ArrayRecordWriterBase::ArrayRecordWriterBase(
+    Options options, ARThreadPool* pool,
+    std::unique_ptr<SequencedChunkWriterBase> writer)
+    : options_(std::move(options)), pool_(pool), writer_(std::move(writer)) {}
+ArrayRecordWriterBase::~ArrayRecordWriterBase() {
+  if (cb_stream_ != nullptr) {
+    cb_stream_->Delete();
+  }
+}
 
 ArrayRecordWriterBase::ArrayRecordWriterBase(
     ArrayRecordWriterBase&& other) noexcept
@@ -286,8 +292,11 @@ ArrayRecordWriterBase::ArrayRecordWriterBase(
       options_(std::move(other.options_)),
       pool_(other.pool_),
       chunk_encoder_(std::move(other.chunk_encoder_)),
-      submit_chunk_callback_(std::move(other.submit_chunk_callback_)) {
+      submit_chunk_callback_(std::move(other.submit_chunk_callback_)),
+      writer_(std::move(other.writer_)),
+      cb_stream_(other.cb_stream_) {
   other.pool_ = nullptr;
+  other.cb_stream_ = nullptr;
   other.Reset(riegeli::kClosed);
 }
 
@@ -308,6 +317,9 @@ ArrayRecordWriterBase& ArrayRecordWriterBase::operator=(
   pool_ = other.pool_;
   other.pool_ = nullptr;
   chunk_encoder_ = std::move(other.chunk_encoder_);
+  cb_stream_ = other.cb_stream_;
+  other.cb_stream_ = nullptr;
+  writer_ = std::move(other.writer_);
   submit_chunk_callback_ = std::move(other.submit_chunk_callback_);
   other.Reset(riegeli::kClosed);
   return *this;
@@ -315,18 +327,20 @@ ArrayRecordWriterBase& ArrayRecordWriterBase::operator=(
 
 void ArrayRecordWriterBase::Initialize() {
   uint32_t max_parallelism = 1;
+  auto writer = writer_.get();
   if (pool_) {
     max_parallelism = pool_->NumThreads();
     if (options_.max_parallelism().has_value()) {
       max_parallelism =
           std::min(max_parallelism, options_.max_parallelism().value());
     }
+    cb_stream_ = CallbackStream::New(
+        [writer]() { writer->SubmitFutureChunks(); }, pool_);
   }
   options_.set_max_parallelism(max_parallelism);
 
   submit_chunk_callback_ = std::make_unique<SubmitChunkCallback>(options_);
   chunk_encoder_ = CreateEncoder();
-  auto writer = get_writer();
   writer->set_pad_to_block_boundary(options_.pad_to_block_boundary());
   if (options_.metadata().has_value()) {
     riegeli::TransposeEncoder encoder(options_.compressor_options(),
@@ -351,7 +365,7 @@ void ArrayRecordWriterBase::Initialize() {
     std::promise<absl::StatusOr<Chunk>> chunk_promise;
     writer->CommitFutureChunk(chunk_promise.get_future());
     chunk_promise.set_value(chunk);
-    if (!writer->SubmitFutureChunks(true)) {
+    if (!writer->SubmitFutureChunks()) {
       Fail(writer->status());
     }
   }
@@ -360,13 +374,18 @@ void ArrayRecordWriterBase::Initialize() {
 }
 
 void ArrayRecordWriterBase::Done() {
-  auto writer = get_writer();
+  auto writer = writer_.get();
   if (chunk_encoder_->num_records() > 0) {
     std::promise<absl::StatusOr<Chunk>> chunk_promise;
     writer->CommitFutureChunk(chunk_promise.get_future());
     chunk_promise.set_value(EncodeChunk(chunk_encoder_.get()));
   }
-  submit_chunk_callback_->WriteFooterAndPostscript(writer.get());
+  submit_chunk_callback_->WriteFooterAndPostscript(writer);
+
+  if (cb_stream_) {
+    cb_stream_->Cancel();
+  }
+
   if (!writer->Close()) {
     Fail(writer->status());
   }
@@ -410,32 +429,33 @@ bool ArrayRecordWriterBase::WriteRecordImpl(Record&& record) {
     Fail(chunk_encoder_->status());
     return false;
   }
-  if (chunk_encoder_->num_records() >= options_.group_size()) {
-    auto writer = get_writer();
-    auto encoder = std::move(chunk_encoder_);
-    auto chunk_promise =
-        std::make_shared<std::promise<absl::StatusOr<Chunk>>>();
-    if (!writer->CommitFutureChunk(chunk_promise->get_future())) {
-      Fail(writer->status());
-      return false;
-    }
-    chunk_encoder_ = CreateEncoder();
-    if (pool_) {
-      std::shared_ptr<riegeli::ChunkEncoder> shared_encoder =
-          std::move(encoder);
-      submit_chunk_callback_->TrackConcurrentChunkWriters();
-      pool_->Schedule([writer, shared_encoder, chunk_promise]() mutable {
-        AR_ENDO_TASK("Encode riegeli chunk");
-        chunk_promise->set_value(EncodeChunk(shared_encoder.get()));
-        writer->SubmitFutureChunks(false);
-      });
-      return true;
-    }
-    chunk_promise->set_value(EncodeChunk(encoder.get()));
-    if (!writer->SubmitFutureChunks(true)) {
-      Fail(writer->status());
-      return false;
-    }
+  if (chunk_encoder_->num_records() < options_.group_size()) {
+    return true;
+  }
+
+  auto writer = writer_.get();
+  auto encoder = std::move(chunk_encoder_);
+  chunk_encoder_ = CreateEncoder();
+
+  auto chunk_promise = std::make_unique<std::promise<absl::StatusOr<Chunk>>>();
+  if (!writer->CommitFutureChunk(chunk_promise->get_future())) {
+    Fail(writer->status());
+    return false;
+  }
+  if (pool_) {
+    submit_chunk_callback_->TrackConcurrentChunkWriters();
+    pool_->Schedule([cb_stream = cb_stream_, encoder = std::move(encoder),
+                     chunk_promise = std::move(chunk_promise)]() mutable {
+      AR_ENDO_TASK("Encode riegeli chunk");
+      chunk_promise->set_value(EncodeChunk(encoder.get()));
+      cb_stream->Fire();
+    });
+    return true;
+  }
+  chunk_promise->set_value(EncodeChunk(encoder.get()));
+  if (!writer->SubmitFutureChunks()) {
+    Fail(writer->status());
+    return false;
   }
   return true;
 }
@@ -469,7 +489,7 @@ void ArrayRecordWriterBase::SubmitChunkCallback::operator()(
 void ArrayRecordWriterBase::SubmitChunkCallback::WriteFooterAndPostscript(
     SequencedChunkWriterBase* writer) {
   // Flushes prior chunks
-  writer->SubmitFutureChunks(true);
+  writer->SubmitFutureChunks();
   // Footer and postscript must pad to block boundary
   writer->set_pad_to_block_boundary(true);
 
@@ -479,7 +499,7 @@ void ArrayRecordWriterBase::SubmitChunkCallback::WriteFooterAndPostscript(
     std::promise<absl::StatusOr<Chunk>> footer_promise;
     writer->CommitFutureChunk(footer_promise.get_future());
     footer_promise.set_value(CreateFooterChunk());
-    writer->SubmitFutureChunks(true);
+    writer->SubmitFutureChunks();
   }
 
   if (!writer->ok()) {
@@ -492,7 +512,7 @@ void ArrayRecordWriterBase::SubmitChunkCallback::WriteFooterAndPostscript(
   postscript_promise.set_value(
       ChunkFromSpan(CompressorOptions().set_uncompressed(),
                     absl::MakeConstSpan(postscript_)));
-  writer->SubmitFutureChunks(true);
+  writer->SubmitFutureChunks();
 }
 
 absl::StatusOr<Chunk>
