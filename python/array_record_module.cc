@@ -93,7 +93,6 @@ PYBIND11_MODULE(array_record_module, m) {
              riegeli::FdReaderBase::Options file_reader_options;
              {
                py::gil_scoped_release scoped_release;
-               riegeli::FileReaderBase::Options file_reader_options;
                if (file_reader_buffer_size.has_value()) {
                  file_reader_options.set_buffer_size(*file_reader_buffer_size);
                }
