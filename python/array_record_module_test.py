@@ -82,6 +82,14 @@ class ArrayRecordModuleTest(absltest.TestCase):
     reader = ArrayRecordReader(self.test_file)
     self.assertEqual(reader.read(), b)
 
+  def test_write_read_with_file_reader_buffer_size(self):
+    writer = ArrayRecordWriter(self.test_file)
+    b = b"F\xc3\xb8\xc3\xb6\x97\xc3\xa5r"
+    writer.write(b)
+    writer.close()
+    reader = ArrayRecordReader(self.test_file, file_reader_buffer_size=2**10)
+    self.assertEqual(reader.read(), b)
+
   def test_batch_read(self):
     writer = ArrayRecordWriter(self.test_file)
     test_strs = [b"abc", b"def", b"ghi", b"kkk", b"..."]
