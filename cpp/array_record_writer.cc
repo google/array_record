@@ -413,25 +413,23 @@ bool ArrayRecordWriterBase::WriteRecordImpl(Record&& record) {
   if (chunk_encoder_->num_records() >= options_.group_size()) {
     auto writer = get_writer();
     auto encoder = std::move(chunk_encoder_);
-    auto chunk_promise =
-        std::make_shared<std::promise<absl::StatusOr<Chunk>>>();
-    if (!writer->CommitFutureChunk(chunk_promise->get_future())) {
+    auto chunk_promise = std::promise<absl::StatusOr<Chunk>>();
+    if (!writer->CommitFutureChunk(chunk_promise.get_future())) {
       Fail(writer->status());
       return false;
     }
     chunk_encoder_ = CreateEncoder();
     if (pool_) {
-      std::shared_ptr<riegeli::ChunkEncoder> shared_encoder =
-          std::move(encoder);
       submit_chunk_callback_->TrackConcurrentChunkWriters();
-      pool_->Schedule([writer, shared_encoder, chunk_promise]() mutable {
+      pool_->Schedule([writer, encoder = std::move(encoder),
+                       chunk_promise = std::move(chunk_promise)]() mutable {
         AR_ENDO_TASK("Encode riegeli chunk");
-        chunk_promise->set_value(EncodeChunk(shared_encoder.get()));
+        chunk_promise.set_value(EncodeChunk(encoder.get()));
         writer->SubmitFutureChunks(false);
       });
       return true;
     }
-    chunk_promise->set_value(EncodeChunk(encoder.get()));
+    chunk_promise.set_value(EncodeChunk(encoder.get()));
     if (!writer->SubmitFutureChunks(true)) {
       Fail(writer->status());
       return false;

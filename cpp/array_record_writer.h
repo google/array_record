@@ -120,7 +120,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
       group_size_ = group_size;
       return *this;
     }
-    const uint32_t group_size() const { return group_size_; }
+    uint32_t group_size() const { return group_size_; }
 
     // Specifies max number of concurrent chunk encoders allowed. Default to the
     // thread pool size.
