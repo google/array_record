@@ -90,6 +90,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
     //   option ::=
     //     "group_size" ":" group_size |
     //     "max_parallelism" ":" max_parallelism |
+    //     "saturation_delay_ms" : saturation_delay_ms |
     //     "uncompressed" |
     //     "brotli" (":" brotli_level)? |
     //     "zstd" (":" zstd_level)? |
@@ -100,6 +101,8 @@ class ArrayRecordWriterBase : public riegeli::Object {
     //     "pad_to_block_boundary" (":" ("true" | "false"))?
     //   group_size ::= positive integer which specifies number of records to be
     //     grouped into a chunk before compression. (default 65536)
+    //   saturation_delay_ms ::= positive integer which specifies a delay in
+    //     milliseconds when the parallel writing queue is saturated.
     //   max_parallelism ::= `auto` or positive integers which specifies
     //     max number of concurrent writers allowed.
     //   brotli_level ::= integer in the range [0..11] (default 6)
@@ -129,6 +132,16 @@ class ArrayRecordWriterBase : public riegeli::Object {
       return *this;
     }
     std::optional<uint32_t> max_parallelism() const { return max_parallelism_; }
+
+    static constexpr uint32_t kDefaultSaturationDelayMs = 10;
+
+    // Specifies a delay in milliseconds when the parallel writing queue is
+    // saturated.
+    Options& set_saturation_delay_ms(uint32_t delay_ms) {
+      saturation_delay_ms_ = delay_ms;
+      return *this;
+    }
+    uint32_t saturation_delay_ms() const { return saturation_delay_ms_; }
 
     // Changes compression algorithm to Uncompressed (turns compression off).
     Options& set_uncompressed() {
@@ -278,6 +291,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
     bool transpose_ = false;
     uint64_t transpose_bucket_size_ = kDefaultTransposeBucketSize;
     std::optional<uint32_t> max_parallelism_ = std::nullopt;
+    int32_t saturation_delay_ms_ = kDefaultSaturationDelayMs;
   };
 
   // Write records of various types.

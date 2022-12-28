@@ -34,6 +34,8 @@ limitations under the License.
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
@@ -134,6 +136,9 @@ ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
       ValueParser::Or(ValueParser::Enum({{"auto", std::nullopt}},
                                         &options.max_parallelism_),
                       ValueParser::Int(1, INT32_MAX, &max_parallelism)));
+  options_parser.AddOption(
+      "saturation_delay_ms",
+      ValueParser::Int(1, INT32_MAX, &options.saturation_delay_ms_));
   // Transpose
   options_parser.AddOption(
       "transpose",
@@ -238,11 +243,15 @@ class ArrayRecordWriterBase::SubmitChunkCallback
   void operator()(uint64_t chunk_seq, uint64_t chunk_offset,
                   uint64_t decoded_data_size, uint64_t num_records) override;
 
-  void TrackConcurrentChunkWriters() {
-    absl::MutexLock l(
-        &mu_,
-        absl::Condition(this, &SubmitChunkCallback::MaybeBlockSchuedling));
+  // return false if we can't schedule the callback.
+  // return true and inc num_concurrent_chunk_writers if we can add a new one.
+  bool TrackConcurrentChunkWriters() {
+    absl::MutexLock l(&mu_);
+    if (num_concurrent_chunk_writers_ >= max_parallelism_) {
+      return false;
+    }
     num_concurrent_chunk_writers_++;
+    return true;
   }
 
   // riegeli::ChunkEncoder requires a "size hint" in its input. This request
@@ -261,10 +270,6 @@ class ArrayRecordWriterBase::SubmitChunkCallback
   const int32_t max_parallelism_;
   int32_t num_concurrent_chunk_writers_ ABSL_GUARDED_BY(mu_) = 0;
   friend class absl::Condition;
-
-  bool MaybeBlockSchuedling() const ABSL_SHARED_LOCKS_REQUIRED(mu_) {
-    return num_concurrent_chunk_writers_ < max_parallelism_;
-  }
 
   // Helper method for creating the footer chunk.
   absl::StatusOr<Chunk> CreateFooterChunk();
@@ -420,7 +425,14 @@ bool ArrayRecordWriterBase::WriteRecordImpl(Record&& record) {
     }
     chunk_encoder_ = CreateEncoder();
     if (pool_) {
-      submit_chunk_callback_->TrackConcurrentChunkWriters();
+      // In some circumstances, we might have submitted too many chunks and may
+      // trigger OOM. To prevent this, we first examine if we can schedule a new
+      // callback with TrackConcurrentChunkWriters. If we failed to do so, we
+      // delay saturation_delay_ms, try flush the chunks, and repeat.
+      while (!submit_chunk_callback_->TrackConcurrentChunkWriters()) {
+        absl::SleepFor(absl::Milliseconds(options_.saturation_delay_ms()));
+        writer->SubmitFutureChunks(false);
+      }
       pool_->Schedule([writer, encoder = std::move(encoder),
                        chunk_promise = std::move(chunk_promise)]() mutable {
         AR_ENDO_TASK("Encode riegeli chunk");
