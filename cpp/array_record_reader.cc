@@ -533,7 +533,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
         uint64_t buf_len = state_->ChunkEndOffset(buffer_chunks.back()) -
                            state_->footer[buffer_chunks[0]].chunk_offset();
         AR_ENDO_JOB(
-            "ArrayRecordReaderBase::ParallelReadRecords",
+            "ArrayRecordReaderBase::ParallelReadRecordsWithIndices",
             absl::StrCat("buffer_idx: ", buf_idx, " buffer_len: ", buf_len));
         MaskedReader masked_reader(riegeli::kClosed);
         {
