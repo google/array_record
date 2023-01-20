@@ -15,7 +15,7 @@ setup(
     include_package_data=True,
     package_data={'': ['*.so']},
     python_requires='>=3.7',
-    install_requires=['absl-py'],
+    install_requires=['absl-py', 'etils[epath]'],
     url='https://github.com/google/array_record',
     license='Apache-2.0',
     classifiers=[

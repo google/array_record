@@ -29,3 +29,30 @@ py_test(
     deps = [
     ],
 )
+
+py_strict_library(
+    name = "array_record_data_source",
+    srcs = ["array_record_data_source.py"],
+    deps = [
+        ":array_record_module",
+        "//third_party/py/absl/flags",
+        "//third_party/py/absl/logging",
+        "//third_party/py/etils/epath",
+        "//util/task/python:error",
+    ],
+)
+
+py_test(
+    name = "array_record_data_source_test",
+    srcs = ["array_record_data_source_test.py"],
+    data = [
+        "//third_party/py/grain/_src/python/testdata:digits.array_record-00000-of-00002",
+        "//third_party/py/grain/_src/python/testdata:digits.array_record-00001-of-00002",
+    ],
+    deps = [
+        ":array_record_data_source",
+        "//third_party/py/absl/flags",
+        "//third_party/py/absl/testing:absltest",
+        "//third_party/py/absl/testing:parameterized",
+    ],
+)
