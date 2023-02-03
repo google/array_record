@@ -1,0 +1,28 @@
+name: Build and test
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10']
+    env:
+      DOCKER_BUILDKIT: 1
+      TMP_FOLDER: /tmp/array_record
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build Docker image
+        run: |
+          docker build --progress=plain --no-cache \
+          --build-arg PYTHON_VERSION=${{ matrix.python-version }} \
+          -t array_record:latest - < oss/build.Dockerfile
+      - name: Build wheels and test
+        run: |
+          docker run -a stdin -a stdout -a stderr \
+            --env PYTHON_VERSION=${{ matrix.python-version }} \
+            --volume ${GITHUB_WORKSPACE}:${TMP_FOLDER} --name array_record array_record:latest \
+            bash oss/build_whl.sh

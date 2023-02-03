@@ -27,32 +27,30 @@ py_test(
     python_version = "PY3",
     srcs_version = "PY3",
     deps = [
+        "@com_google_absl_py//absl/testing:absltest",
     ],
 )
 
-py_strict_library(
+py_library(
     name = "array_record_data_source",
     srcs = ["array_record_data_source.py"],
+    data = [":array_record_module.so"],
     deps = [
-        ":array_record_module",
-        "//third_party/py/absl/flags",
-        "//third_party/py/absl/logging",
-        "//third_party/py/etils/epath",
-        "//util/task/python:error",
+        # Implicit etils (/epath) dependency.
     ],
 )
 
 py_test(
     name = "array_record_data_source_test",
     srcs = ["array_record_data_source_test.py"],
+    args = ["--test_srcdir=python/testdata"],
     data = [
-        "//third_party/py/grain/_src/python/testdata:digits.array_record-00000-of-00002",
-        "//third_party/py/grain/_src/python/testdata:digits.array_record-00001-of-00002",
+        "//python/testdata:digits.array_record-00000-of-00002",
+        "//python/testdata:digits.array_record-00001-of-00002",
     ],
     deps = [
         ":array_record_data_source",
-        "//third_party/py/absl/flags",
-        "//third_party/py/absl/testing:absltest",
-        "//third_party/py/absl/testing:parameterized",
+        "@com_google_absl_py//absl/testing:absltest",
+        "@com_google_absl_py//absl/testing:parameterized",
     ],
 )

@@ -67,7 +67,6 @@ cc_library(
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/synchronization",
-        "//util/functional:from_callback",
     ],
 )
 
@@ -91,8 +90,8 @@ cc_test(
     deps = [
         ":common",
         ":test_utils",
-        "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -105,7 +104,6 @@ cc_library(
         ":layout_cc_proto",
         ":sequenced_chunk_writer",
         ":thread_pool",
-        "@com_google_protobuf//:protobuf_lite",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -113,6 +111,7 @@ cc_library(
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf_lite",
         "@com_google_riegeli//riegeli/base:object",
         "@com_google_riegeli//riegeli/base:options_parser",
         "@com_google_riegeli//riegeli/bytes:chain_writer",
@@ -155,7 +154,6 @@ cc_library(
         ":parallel_for",
         ":thread_compatible_shared_ptr",
         ":thread_pool",
-        "@com_google_protobuf//:protobuf_lite",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/functional:bind_front",
@@ -165,6 +163,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf_lite",
         "@com_google_riegeli//riegeli/base:object",
         "@com_google_riegeli//riegeli/base:options_parser",
         "@com_google_riegeli//riegeli/base:status",
@@ -182,10 +181,10 @@ cc_test(
         ":common",
         ":sequenced_chunk_writer",
         ":thread_pool",
-        "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:cord",
+        "@com_google_googletest//:gtest_main",
         "@com_google_riegeli//riegeli/bytes:chain_writer",
         "@com_google_riegeli//riegeli/bytes:cord_writer",
         "@com_google_riegeli//riegeli/bytes:string_reader",
@@ -204,8 +203,8 @@ cc_test(
         ":common",
         ":thread_compatible_shared_ptr",
         ":thread_pool",
-        "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -220,8 +219,8 @@ cc_test(
         ":layout_cc_proto",
         ":test_utils",
         ":thread_pool",
-        "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
         "@com_google_riegeli//riegeli/bytes:string_reader",
         "@com_google_riegeli//riegeli/bytes:string_writer",
         "@com_google_riegeli//riegeli/chunk_encoding:constants",
@@ -248,9 +247,9 @@ cc_test(
     deps = [
         ":parallel_for",
         ":thread_pool",
-        "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -265,10 +264,10 @@ cc_test(
         ":layout_cc_proto",
         ":test_utils",
         ":thread_pool",
-        "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
         "@com_google_riegeli//riegeli/bytes:string_reader",
         "@com_google_riegeli//riegeli/bytes:string_writer",
         "@com_google_riegeli//riegeli/chunk_encoding:chunk_decoder",

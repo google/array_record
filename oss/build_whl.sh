@@ -3,8 +3,12 @@
 
 set -e -x
 
-export PYTHON_MINOR_VERSION="${PYTHON_MINOR_VERSION}"
-PYTHON="python3${PYTHON_MINOR_VERSION:+.$PYTHON_MINOR_VERSION}"
+export PYTHON_VERSION="${PYTHON_VERSION}"
+PYTHON="python${PYTHON_VERSION}"
+PYTHON_MAJOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.major)')
+PYTHON_MINOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.minor)')
+BAZEL_FLAGS="--crosstool_top="
+BAZEL_FLAGS+="@sigbuild-r2.9-${PYTHON}_config_cuda//crosstool:toolchain"
 
 function write_to_bazelrc() {
   echo "$1" >> .bazelrc
@@ -19,15 +23,18 @@ function main() {
   write_to_bazelrc "build --host_cxxopt=-std=c++17"
   write_to_bazelrc "build --linkopt=\"-lrt -lm\""
   write_to_bazelrc "build --experimental_repo_remote_exec"
-  write_to_bazelrc "build --action_env=PYTHON_BIN_PATH=\"/usr/bin/$PYTHON\""
-  write_to_bazelrc "build --action_env=PYTHON_LIB_PATH=\"/usr/lib/$PYTHON\""
-  write_to_bazelrc "build --python_path=\"/usr/bin/$PYTHON\""
+  write_to_bazelrc "build --action_env=PYTHON_BIN_PATH=\"/usr/bin/${PYTHON}\""
+  write_to_bazelrc "build --action_env=PYTHON_LIB_PATH=\"/usr/lib/${PYTHON}\""
+  write_to_bazelrc "build --python_path=\"/usr/bin/${PYTHON}\""
 
+  # Using a previous version of Blaze to avoid:
+  # https://github.com/bazelbuild/bazel/issues/8622
+  export USE_BAZEL_VERSION=5.4.0
   bazel clean
-  bazel build $@ ...
-  bazel test $@ ...
+  bazel build ${BAZEL_FLAGS} ...
+  bazel test ${BAZEL_FLAGS} --verbose_failures --test_output=errors ...
 
-  DEST="/tmp/array_record_pip_pkg"
+  DEST="/tmp/array_record/all_dist"
   # Create the directory, then do dirname on a non-existent file inside it to
   # give us an absolute paths with tilde characters resolved to the destination
   # directory.
@@ -39,7 +46,7 @@ function main() {
   echo $(date) : "=== Using tmpdir: ${TMPDIR}"
   mkdir "${TMPDIR}/array_record"
 
-  echo "=== Copy array_record files"
+  echo $(date) : "=== Copy array_record files"
 
   cp setup.py "${TMPDIR}"
   cp LICENSE "${TMPDIR}"
@@ -57,10 +64,12 @@ function main() {
 
   echo $(date) : "=== Auditing wheel"
   auditwheel repair --plat manylinux2014_x86_64 -w dist dist/*.whl
+  echo $(date) : "=== Listing wheel"
+  ls -lrt dist/*.whl
   cp dist/*.whl "${DEST}"
   popd
 
   echo $(date) : "=== Output wheel file is in: ${DEST}"
 }
 
-main "$@"
+main

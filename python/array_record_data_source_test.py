@@ -42,8 +42,6 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
   def setUp(self):
     super().setUp()
     self.testdata_dir = pathlib.Path(FLAGS.test_srcdir)
-    self.testdata_dir /= (
-    )
 
   def test_array_record_data_source_len(self):
     ar = array_record_data_source.ArrayRecordDataSource([

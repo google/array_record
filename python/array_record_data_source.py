@@ -38,7 +38,7 @@ import itertools
 import os
 import pathlib
 import typing
-from typing import Any, Callable, List, Mapping, Protocol, Sequence, TypeVar, Union
+from typing import Any, Callable, List, Mapping, Protocol, Sequence, Tuple, TypeVar, Union
 
 from absl import flags
 from absl import logging
@@ -74,7 +74,7 @@ T = TypeVar("T")
 
 
 def _run_in_parallel(
-    function: Callable[Any, T],
+    function: Callable[[Any], T],
     list_of_kwargs_to_function: Sequence[Mapping[str, Any]],
     num_workers: int,
 ) -> List[T]:
@@ -103,7 +103,10 @@ def _run_in_parallel(
     futures_as_completed = futures.as_completed(thread_futures)
     for completed_future in futures_as_completed:
       if completed_future.exception():
-        executor.shutdown(cancel_futures=True)
+        # Cancel all remaining futures, if possible. In Python>3.8, you can call
+        # `executor.shutdown(cancel_futures=True)`.
+        for remaining_future in thread_futures:
+          remaining_future.cancel()
         raise completed_future.exception()
   return [future.result() for future in thread_futures]
 
@@ -225,7 +228,7 @@ class ArrayRecordDataSource:
   def __len__(self) -> int:
     return self._num_records
 
-  def _reader_idx_and_position(self, record_key: int) -> tuple[int, int]:
+  def _reader_idx_and_position(self, record_key: int) -> Tuple[int, int]:
     """Computes reader idx and position of given record key."""
     if record_key < 0 or record_key >= self._num_records:
       raise ValueError("Record key should be in [0, num_records)")
@@ -242,7 +245,7 @@ class ArrayRecordDataSource:
 
   def _split_keys_per_reader(
       self, record_keys: Sequence[int]
-  ) -> Mapping[int, Sequence[tuple[int, int]]]:
+  ) -> Mapping[int, Sequence[Tuple[int, int]]]:
     """Splits record_keys among readers."""
     positions_and_indices = {}
     for idx, record_key in enumerate(record_keys):
@@ -255,8 +258,8 @@ class ArrayRecordDataSource:
 
   def __getitem__(self, record_keys: Sequence[int]) -> Sequence[Any]:
     def read_records(
-        reader_idx: int, reader_positions_and_indices: Sequence[tuple[int, int]]
-    ) -> Sequence[tuple[Any, int]]:
+        reader_idx: int, reader_positions_and_indices: Sequence[Tuple[int, int]]
+    ) -> Sequence[Tuple[Any, int]]:
       """Reads records using the given reader keeping track of the indices."""
       # Initialize readers lazily when we need to read from them.
       if self._readers[reader_idx] is None:
@@ -283,7 +286,7 @@ class ArrayRecordDataSource:
           "reader_idx": reader_idx,
           "reader_positions_and_indices": reader_positions_and_indices,
       })
-    records_with_indices: Sequence[Sequence[tuple[Any, int]]] = (
+    records_with_indices: Sequence[Sequence[Tuple[Any, int]]] = (
         _run_in_parallel(
             function=read_records,
             list_of_kwargs_to_function=list_of_kwargs_to_read_records,

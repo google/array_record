@@ -1,22 +1,35 @@
 workspace(name = "com_google_array_record")
 
-# Might be better than http_archive
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-# Abseil LTS 20220623.1
+# Abseil LTS 20230125.0
 http_archive(
     name = "com_google_absl",
-    sha256 = "91ac87d30cc6d79f9ab974c51874a704de9c2647c40f6932597329a282217ba8",  # SHARED_ABSL_SHA
-    strip_prefix = "abseil-cpp-20220623.1",
+    sha256 = "3ea49a7d97421b88a8c48a0de16c16048e17725c7ec0f1d3ea2683a2a75adc21",  # SHARED_ABSL_SHA
+    strip_prefix = "abseil-cpp-20230125.0",
     urls = [
-        "https://github.com/abseil/abseil-cpp/archive/refs/tags/20220623.1.tar.gz",
+        "https://github.com/abseil/abseil-cpp/archive/refs/tags/20230125.0.tar.gz",
     ],
 )
+# Version: pypi-v0.11.0, 2020/10/27
+git_repository(
+    name = "com_google_absl_py",
+    remote = "https://github.com/abseil/abseil-py",
+    commit = "127c98870edf5f03395ce9cf886266fa5f24455e",
+)
+# Needed by com_google_riegeli
 http_archive(
-    name = "com_google_googletest",
-    strip_prefix = "googletest-eb9225ce361affe561592e0912320b9db84985d0",
-    url = "https://github.com/google/googletest/archive/eb9225ce361affe561592e0912320b9db84985d0.zip",
-    sha256 = "a7db7d1295ce46b93f3d1a90dbbc55a48409c00d19684fcd87823037add88118",
+    name = "org_brotli",
+    sha256 = "84a9a68ada813a59db94d83ea10c54155f1d34399baf377842ff3ab9b3b3256e",
+    strip_prefix = "brotli-3914999fcc1fda92e750ef9190aa6db9bf7bdb07",
+    urls = ["https://github.com/google/brotli/archive/3914999fcc1fda92e750ef9190aa6db9bf7bdb07.zip"],  # 2022-11-17
+)
+# GoogleTest/GoogleMock framework. Used by most unit-tests.
+http_archive(
+     name = "com_google_googletest",
+     urls = ["https://github.com/google/googletest/archive/main.zip"],
+     strip_prefix = "googletest-main",
 )
 
 # V3.4.0, 20210818
@@ -39,34 +52,33 @@ cc_library(
 """
 )
 
-## `pybind11_bazel`
-# See https://github.com/pybind/pybind11_bazel
+# `pybind11_bazel` (https://github.com/pybind/pybind11_bazel): 20230130
 http_archive(
   name = "pybind11_bazel",
-  strip_prefix = "pybind11_bazel-72cbbf1fbc830e487e3012862b7b720001b70672",
-  sha256 = "516c1b3a10d87740d2b7de6f121f8e19dde2c372ecbfe59aef44cd1872c10395",
-  urls = ["https://github.com/pybind/pybind11_bazel/archive/72cbbf1fbc830e487e3012862b7b720001b70672.tar.gz"],
+  strip_prefix = "pybind11_bazel-5f458fa53870223a0de7eeb60480dd278b442698",
+  sha256 = "b35f3abc3d52ee5c753fdeeb2b5129b99e796558754ca5d245e28e51c1072a21",
+  urls = ["https://github.com/pybind/pybind11_bazel/archive/5f458fa53870223a0de7eeb60480dd278b442698.tar.gz"],
 )
-# V2.9.2, 20220330
+# V2.10.3, 20230130
 http_archive(
   name = "pybind11",
   build_file = "@pybind11_bazel//:pybind11.BUILD",
-  strip_prefix = "pybind11-2.9.2",
-  sha256 = "d1646e6f70d8a3acb2ddd85ce1ed543b5dd579c68b8fb8e9638282af20edead8",
-  urls = ["https://github.com/pybind/pybind11/archive/refs/tags/v2.9.2.zip"],
+  strip_prefix = "pybind11-2.10.3",
+  sha256 = "201966a61dc826f1b1879a24a3317a1ec9214a918c8eb035be2f30c3e9cfbdcb",
+  urls = ["https://github.com/pybind/pybind11/archive/refs/tags/v2.10.3.zip"],
 )
 load("@pybind11_bazel//:python_configure.bzl", "python_configure")
 python_configure(name = "local_config_python")
 
-# V3.20.1, 20220421
+# V21.12, 20230130
 # proto_library, cc_proto_library, and java_proto_library rules implicitly
 # depend on @com_google_protobuf for protoc and proto runtimes.
 # This statement defines the @com_google_protobuf repo.
 http_archive(
     name = "com_google_protobuf",
-    sha256 = "8b28fdd45bab62d15db232ec404248901842e5340299a57765e48abe8a80d930",
-    strip_prefix = "protobuf-3.20.1",
-    urls = ["https://github.com/protocolbuffers/protobuf/archive/v3.20.1.tar.gz"],
+    sha256 = "22fdaf641b31655d4b2297f9981fa5203b2866f8332d3c6333f6b0107bb320de",
+    strip_prefix = "protobuf-21.12",
+    urls = ["https://github.com/protocolbuffers/protobuf/archive/v21.12.tar.gz"],
 )
 
 load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
@@ -80,15 +92,7 @@ http_archive(
         "https://github.com/google/riegeli/archive/master.zip",
     ],
 )
-# Dependencies required by riegeli
-http_archive(
-    name = "org_brotli",
-    patch_args = ["-p1"],
-    patches = ["@com_google_riegeli//third_party:brotli.patch"],
-    sha256 = "fec5a1d26f3dd102c542548aaa704f655fecec3622a24ec6e97768dcb3c235ff",
-    strip_prefix = "brotli-68f1b90ad0d204907beb58304d0bd06391001a4d",
-    urls = ["https://github.com/google/brotli/archive/68f1b90ad0d204907beb58304d0bd06391001a4d.zip"],  # 2021-08-18
-)
+# Riegeli's dependencies
 http_archive(
     name = "net_zstd",
     build_file = "@com_google_riegeli//third_party:net_zstd.BUILD",
@@ -110,7 +114,6 @@ http_archive(
     strip_prefix = "snappy-1.1.8",
     urls = ["https://github.com/google/snappy/archive/1.1.8.zip"],  # 2020-01-14
 )
-
 http_archive(
     name = "crc32c",
     build_file = "@com_google_riegeli//third_party:crc32.BUILD",
@@ -118,7 +121,6 @@ http_archive(
     strip_prefix = "crc32c-1.1.0",
     urls = ["https://github.com/google/crc32c/archive/1.1.0.zip"],  # 2019-05-24
 )
-
 http_archive(
     name = "zlib",
     build_file = "@com_google_riegeli//third_party:zlib.BUILD",
@@ -126,7 +128,6 @@ http_archive(
     strip_prefix = "zlib-1.2.11",
     urls = ["http://zlib.net/fossils/zlib-1.2.11.tar.gz"],  # 2017-01-15
 )
-
 http_archive(
     name = "highwayhash",
     build_file = "@com_google_riegeli//third_party:highwayhash.BUILD",
@@ -135,12 +136,12 @@ http_archive(
     urls = ["https://github.com/google/highwayhash/archive/276dd7b4b6d330e4734b756e97ccfb1b69cc2e12.zip"],  # 2019-02-22
 )
 
-
+# Tensorflow, 20230130
 http_archive(
     name = "org_tensorflow",
-    strip_prefix = "tensorflow-2.10.0",
-    sha256 = "d79a95ede8305f14a10dd0409a1e5a228849039c19ccfb90dfe8367295fd04e0",
-    urls = ["https://github.com/tensorflow/tensorflow/archive/v2.10.0.zip"],
+    strip_prefix = "tensorflow-2.11.0",
+    sha256 = "e52cda3bae45f0ae0fccd4055e9fa29892b414f70e2df94df9a3a10319c75fff",
+    urls = ["https://github.com/tensorflow/tensorflow/archive/v2.11.0.zip"],
 )
 
 # This import (along with the org_tensorflow archive) is necessary to provide the devtoolset-9 toolchain
