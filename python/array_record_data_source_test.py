@@ -23,7 +23,7 @@ from absl import flags
 from absl.testing import absltest
 from absl.testing import parameterized
 
-from python import array_record_data_source
+from array_record.python import array_record_data_source
 
 
 FLAGS = flags.FLAGS

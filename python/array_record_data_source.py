@@ -44,7 +44,7 @@ from absl import flags
 from absl import logging
 from etils import epath
 
-from python.array_record_module import ArrayRecordReader
+from array_record.python.array_record_module import ArrayRecordReader
 
 
 # TODO(jolesiak): Decide what to do with these flags, e.g., remove them (could
@@ -159,7 +159,8 @@ def _get_read_instructions(
       reader.close()
     return _ReadInstruction(path, start, end)
 
-  num_workers = min(len(paths), _GRAIN_NUM_THREADS_COMPUTING_NUM_RECORDS.value)
+  num_threads = _get_flag_value(_GRAIN_NUM_THREADS_COMPUTING_NUM_RECORDS)
+  num_workers = min(len(paths), num_threads)
   return _run_in_parallel(
       function=get_read_instruction,
       list_of_kwargs_to_function=[{"path": path} for path in paths],
@@ -274,9 +275,8 @@ class ArrayRecordDataSource:
       return list(zip(records, indices))
 
     positions_and_indices = self._split_keys_per_reader(record_keys)
-    num_workers = min(
-        len(positions_and_indices), _GRAIN_NUM_THREADS_FETCHING_RECORDS.value
-    )
+    num_threads = _get_flag_value(_GRAIN_NUM_THREADS_FETCHING_RECORDS)
+    num_workers = min(len(positions_and_indices), num_threads)
     list_of_kwargs_to_read_records = []
     for (
         reader_idx,
@@ -309,3 +309,11 @@ class ArrayRecordDataSource:
       if reader:
         reader.close()
         self._readers[reader_idx] = None
+
+
+def _get_flag_value(flag: flags.FlagHolder[int]) -> int:
+  """Retrieves the flag value or the default if run outside of absl."""
+  try:
+    return flag.value
+  except flags.UnparsedFlagAccessError:
+    return flag.default
