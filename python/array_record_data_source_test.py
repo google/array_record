@@ -174,6 +174,13 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     with self.assertRaises(ValueError):
       array_record_data_source.ArrayRecordDataSource([])
 
+  def test_repr(self):
+    ar = array_record_data_source.ArrayRecordDataSource([
+        self.testdata_dir / "digits.array_record-00000-of-00002",
+        self.testdata_dir / "digits.array_record-00001-of-00002",
+    ])
+    self.assertRegex(repr(ar), r"ArrayRecordDataSource\(hash_of_paths=[\w]+\)")
+
 
 class RunInParallelTest(parameterized.TestCase):
 

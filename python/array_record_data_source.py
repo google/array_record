@@ -217,6 +217,7 @@ class ArrayRecordDataSource:
           "a Sequence, String, pathlib.Path or FileInstruction."
       )
     self._read_instructions = _get_read_instructions(paths)
+    self._paths = [ri.filename for ri in self._read_instructions]
     # We open readers lazily when we need to read from them.
     self._readers = [None] * len(self._read_instructions)
     self._num_records = sum(
