@@ -425,7 +425,7 @@ bool ArrayRecordWriterBase::WriteRecordImpl(Record&& record) {
       return false;
     }
     chunk_encoder_ = CreateEncoder();
-    if (pool_) {
+    if (pool_ && options_.max_parallelism().value() > 1) {
       std::shared_ptr<riegeli::ChunkEncoder> shared_encoder =
           std::move(encoder);
       submit_chunk_callback_->TrackConcurrentChunkWriters();
