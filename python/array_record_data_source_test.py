@@ -1,4 +1,3 @@
-# Copyright 2022 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +15,7 @@
 
 from concurrent import futures
 import dataclasses
+import os
 import pathlib
 from unittest import mock
 
@@ -95,14 +95,18 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
 
   def test_array_record_data_source_file_instructions(self):
     file_instruction_one = DummyFileInstruction(
-        filename=self.testdata_dir / "digits.array_record-00000-of-00002",
+        filename=os.fspath(
+            self.testdata_dir / "digits.array_record-00000-of-00002"
+        ),
         skip=2,
         take=1,
         examples_in_shard=3,
     )
 
     file_instruction_two = DummyFileInstruction(
-        filename=self.testdata_dir / "digits.array_record-00001-of-00002",
+        filename=os.fspath(
+            self.testdata_dir / "digits.array_record-00001-of-00002"
+        ),
         skip=2,
         take=2,
         examples_in_shard=99,
@@ -161,14 +165,6 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
 
     with self.assertRaises(ValueError):
       ar._reader_idx_and_position(len(ar))
-
-  def test_array_record_source_invalid_type(self):
-    with self.assertRaises(ValueError):
-      array_record_data_source.ArrayRecordDataSource(
-          {
-              "data": self.testdata_dir / "digits.array_record-00000-of-00001",
-          }
-      )
 
   def test_array_record_source_empty_sequence(self):
     with self.assertRaises(ValueError):

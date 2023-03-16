@@ -75,7 +75,7 @@ T = TypeVar("T")
 
 
 def _run_in_parallel(
-    function: Callable[[Any], T],
+    function: Callable[..., T],
     list_of_kwargs_to_function: Sequence[Mapping[str, Any]],
     num_workers: int,
 ) -> List[T]:
