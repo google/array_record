@@ -23,7 +23,7 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.12.1
         env:
-          CIBW_BEFORE_ALL: sh oss/build_whl.sh
+          CIBW_BEFORE_ALL: bash oss/build_whl.sh
           CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux2014"
           CIBW_MANYLINUX_X86_64_IMAGE: "manylinux2014"
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH=/project/ci/lib64 auditwheel repair -w {dest_dir} {wheel}"
