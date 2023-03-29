@@ -7,8 +7,9 @@ export PYTHON_VERSION="${PYTHON_VERSION}"
 PYTHON="python${PYTHON_VERSION}"
 PYTHON_MAJOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.major)')
 PYTHON_MINOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.minor)')
-BAZEL_FLAGS="--crosstool_top="
-BAZEL_FLAGS+="@sigbuild-r2.9-${PYTHON}_config_cuda//crosstool:toolchain"
+BAZEL_FLAGS=""
+# BAZEL_FLAGS="--crosstool_top="
+# BAZEL_FLAGS+="@sigbuild-r2.9-${PYTHON}_config_cuda//crosstool:toolchain"
 
 function write_to_bazelrc() {
   echo "$1" >> .bazelrc

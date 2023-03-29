@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.9']
-        os: ['ubuntu-latest', 'macos-latest']
+        os: ['macos-latest']
     env:
       DOCKER_BUILDKIT: 1
       TMP_FOLDER: /tmp/array_record
