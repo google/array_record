@@ -6,36 +6,31 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ['3.8', '3.9', '3.10']
+        python-version: ['3.9']
+        os: ['ubuntu-latest', 'macos-latest']
     env:
       DOCKER_BUILDKIT: 1
       TMP_FOLDER: /tmp/array_record
     steps:
-      - uses: actions/checkout@v2
-      - name: Build Docker image
-        run: |
-          docker build --progress=plain --no-cache \
-          --build-arg PYTHON_VERSION=${{ matrix.python-version }} \
-          -t array_record:latest - < oss/build.Dockerfile
-      - name: Build wheels and test
-        run: |
-          docker run --rm -a stdin -a stdout -a stderr \
-            --env PYTHON_VERSION=${{ matrix.python-version }} \
-            --volume ${GITHUB_WORKSPACE}:${TMP_FOLDER} --name array_record array_record:latest \
-            bash oss/build_whl.sh
-      - name: Install in a blank Docker and test the import in Python
-        run: |
-          docker run --rm -a stdin -a stdout -a stderr \
-            --env PYTHON_VERSION=${{ matrix.python-version }} \
-            --volume ${GITHUB_WORKSPACE}:/root \
-            python:${{ matrix.python-version }} bash -c "
-              ARRAY_RECORD_VERSION=\$(python /root/setup.py --version 2>&1 /dev/null)
-              SHORT_PYTHON_VERSION=\${PYTHON_VERSION//./}
-              ARRAY_RECORD_WHEEL=\"/root/all_dist/array_record-\${ARRAY_RECORD_VERSION}-py\${SHORT_PYTHON_VERSION}-none-any.whl\"
-              python -m pip install \${ARRAY_RECORD_WHEEL} &&
-              python -c 'import array_record' &&
-              python -c 'from array_record.python import array_record_data_source'
-            "
+      - uses: actions/checkout@v3
+      - uses: bazelbuild/setup-bazelisk@v2
+      - uses: actions/setup-python@v3
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.12.1
+        env:
+          CIBW_BEFORE_ALL: sh oss/build_whl.sh
+          CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux2014"
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux2014"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH=/project/ci/lib64 auditwheel repair -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-listdeps {wheel} && delocate-wheel --require-archs {delocate_archs} -w {dest_dir} {wheel}"
+          CIBW_ARCHS_MACOS: x86_64 universal2
+          CIBW_ARCHS_LINUX: x86_64
+
+      - uses: actions/upload-artifact@v3
+        with:
+          path: ./wheelhouse/*.whl

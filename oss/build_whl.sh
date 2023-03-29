@@ -59,17 +59,17 @@ function main() {
     bazel-bin/python "${TMPDIR}/array_record"
 
   pushd ${TMPDIR}
-  echo $(date) : "=== Building wheel"
-  ${PYTHON} setup.py bdist_wheel --python-tag py3${PYTHON_MINOR_VERSION}
+  # echo $(date) : "=== Building wheel"
+  # ${PYTHON} setup.py bdist_wheel --python-tag py3${PYTHON_MINOR_VERSION}
 
-  echo $(date) : "=== Auditing wheel"
-  auditwheel repair --plat manylinux2014_x86_64 -w dist dist/*.whl
-  echo $(date) : "=== Listing wheel"
-  ls -lrt dist/*.whl
-  cp dist/*.whl "${DEST}"
-  popd
+  # echo $(date) : "=== Auditing wheel"
+  # auditwheel repair --plat manylinux2014_x86_64 -w dist dist/*.whl
+  # echo $(date) : "=== Listing wheel"
+  # ls -lrt dist/*.whl
+  # cp dist/*.whl "${DEST}"
+  # popd
 
-  echo $(date) : "=== Output wheel file is in: ${DEST}"
+  # echo $(date) : "=== Output wheel file is in: ${DEST}"
 }
 
 main
