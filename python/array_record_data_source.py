@@ -39,7 +39,7 @@ import itertools
 import os
 import pathlib
 import typing
-from typing import Any, Callable, List, Mapping, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 
 from absl import flags
 from absl import logging
@@ -74,10 +74,31 @@ _GRAIN_NUM_THREADS_FETCHING_RECORDS = flags.DEFINE_integer(
 T = TypeVar("T")
 
 
+def _compute_results(
+    executor: futures.Executor,
+    function: Callable[..., T],
+    kwargs_list: Sequence[Mapping[str, Any]],
+) -> List[T]:
+  """Helper function for _run_in_parallel."""
+  thread_futures = [
+      executor.submit(function, **kwargs) for kwargs in kwargs_list
+  ]
+  futures_as_completed = futures.as_completed(thread_futures)
+  for completed_future in futures_as_completed:
+    if completed_future.exception():
+      # Cancel all remaining futures, if possible. In Python>3.8, you can call
+      # `executor.shutdown(cancel_futures=True)`.
+      for remaining_future in thread_futures:
+        remaining_future.cancel()
+      raise completed_future.exception()
+  return [future.result() for future in thread_futures]
+
+
 def _run_in_parallel(
     function: Callable[..., T],
     list_of_kwargs_to_function: Sequence[Mapping[str, Any]],
-    num_workers: int,
+    executor: Optional[futures.Executor] = None,
+    num_workers: Optional[int] = None,
 ) -> List[T]:
   """Runs `function` in parallel threads with given keyword arguments.
 
@@ -88,28 +109,25 @@ def _run_in_parallel(
     function: The function to execute in parallel.
     list_of_kwargs_to_function: A list of dicts mapping from string to argument
       value. These will be passed into `function` as kwargs.
-    num_workers: Number of threads in the thread pool.
+    executor: executor to execute the function.
+    num_workers: num workers to create executor (if executor isn't specified.)
 
   Returns:
     list of return values from function, in the same order as the arguments in
     list_of_kwargs_to_function.
   """
-  if num_workers < 1:
+  if executor and num_workers is not None:
+    raise ValueError("You can't specify both num_workers and executor.")
+  if not executor and num_workers is None:
+    raise ValueError("Either num_workers or executor must be specified.")
+  if num_workers is not None and num_workers < 1:
     raise ValueError("num_workers must be >=1 for parallelism.")
-  thread_futures = []
-  with futures.ThreadPoolExecutor(num_workers) as executor:
-    for kwargs in list_of_kwargs_to_function:
-      future = executor.submit(function, **kwargs)
-      thread_futures.append(future)
-    futures_as_completed = futures.as_completed(thread_futures)
-    for completed_future in futures_as_completed:
-      if completed_future.exception():
-        # Cancel all remaining futures, if possible. In Python>3.8, you can call
-        # `executor.shutdown(cancel_futures=True)`.
-        for remaining_future in thread_futures:
-          remaining_future.cancel()
-        raise completed_future.exception()
-  return [future.result() for future in thread_futures]
+
+  if executor:
+    return _compute_results(executor, function, list_of_kwargs_to_function)
+  else:
+    with futures.ThreadPoolExecutor(num_workers) as executor:
+      return _compute_results(executor, function, list_of_kwargs_to_function)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -228,6 +246,9 @@ class ArrayRecordDataSource:
     )
     self._prefix_sums = list(itertools.accumulate(records_per_instruction))
     self._readers = [None] * len(self._read_instructions)
+    num_threads = _get_flag_value(_GRAIN_NUM_THREADS_FETCHING_RECORDS)
+    num_workers = min(len(self._paths), num_threads)
+    self._executor = futures.ThreadPoolExecutor(num_workers)
 
   def __enter__(self):
     logging.debug("__enter__ for ArrayRecordDataSource is called.")
@@ -290,8 +311,6 @@ class ArrayRecordDataSource:
       return list(zip(records, indices))
 
     positions_and_indices = self._split_keys_per_reader(record_keys)
-    num_threads = _get_flag_value(_GRAIN_NUM_THREADS_FETCHING_RECORDS)
-    num_workers = min(len(positions_and_indices), num_threads)
     list_of_kwargs_to_read_records = []
     for (
         reader_idx,
@@ -305,7 +324,7 @@ class ArrayRecordDataSource:
         _run_in_parallel(
             function=read_records,
             list_of_kwargs_to_function=list_of_kwargs_to_read_records,
-            num_workers=num_workers,
+            executor=self._executor,
         )
     )
 
@@ -334,6 +353,9 @@ class ArrayRecordDataSource:
     for p in self._paths:
       h.update(p.encode())
     return f"ArrayRecordDataSource(hash_of_paths={h.hexdigest()})"
+
+  def __del__(self):
+    self._executor.shutdown(wait=True)
 
 
 def _get_flag_value(flag: flags.FlagHolder[int]) -> int:

@@ -223,6 +223,37 @@ class RunInParallelTest(parameterized.TestCase):
           num_workers=num_workers,
       )
 
+  def test_num_workers_or_executor_both_specified_fails(self):
+    function = mock.Mock(return_value="return value")
+    list_of_kwargs_to_function = [
+        {"foo": 1},
+        {"bar": 2},
+    ]
+    with self.assertRaisesRegex(
+        ValueError, "You can't specify both num_workers and executor."
+    ):
+      with futures.ThreadPoolExecutor(2) as executor:
+        array_record_data_source._run_in_parallel(
+            function=function,
+            list_of_kwargs_to_function=list_of_kwargs_to_function,
+            executor=executor,
+            num_workers=2,
+        )
+
+  def test_none_of_num_workers_or_executor_specified_fails(self):
+    function = mock.Mock(return_value="return value")
+    list_of_kwargs_to_function = [
+        {"foo": 1},
+        {"bar": 2},
+    ]
+    with self.assertRaisesRegex(
+        ValueError, "Either num_workers or executor must be specified."
+    ):
+      array_record_data_source._run_in_parallel(
+          function=function,
+          list_of_kwargs_to_function=list_of_kwargs_to_function,
+      )
+
   def test_num_workers_is_passed_to_thread_executor(self):
     function = mock.Mock(return_value="return value")
     list_of_kwargs_to_function = [
