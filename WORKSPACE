@@ -55,9 +55,9 @@ cc_library(
 # `pybind11_bazel` (https://github.com/pybind/pybind11_bazel): 20230130
 http_archive(
   name = "pybind11_bazel",
-  strip_prefix = "pybind11_bazel-5f458fa53870223a0de7eeb60480dd278b442698",
-  sha256 = "b35f3abc3d52ee5c753fdeeb2b5129b99e796558754ca5d245e28e51c1072a21",
-  urls = ["https://github.com/pybind/pybind11_bazel/archive/5f458fa53870223a0de7eeb60480dd278b442698.tar.gz"],
+  strip_prefix = "pybind11_bazel-master",
+#   sha256 = "b35f3abc3d52ee5c753fdeeb2b5129b99e796558754ca5d245e28e51c1072a21",
+  urls = ["https://github.com/pybind/pybind11_bazel/archive/master.tar.gz"],
 )
 # V2.10.3, 20230130
 http_archive(
@@ -131,9 +131,9 @@ http_archive(
 http_archive(
     name = "highwayhash",
     build_file = "@com_google_riegeli//third_party:highwayhash.BUILD",
-    sha256 = "cf891e024699c82aabce528a024adbe16e529f2b4e57f954455e0bf53efae585",
-    strip_prefix = "highwayhash-276dd7b4b6d330e4734b756e97ccfb1b69cc2e12",
-    urls = ["https://github.com/google/highwayhash/archive/276dd7b4b6d330e4734b756e97ccfb1b69cc2e12.zip"],  # 2019-02-22
+    # sha256 = "cf891e024699c82aabce528a024adbe16e529f2b4e57f954455e0bf53efae585",
+    strip_prefix = "highwayhash-master",
+    urls = ["https://github.com/google/highwayhash/archive/master.zip"],  # 2019-02-22
 )
 
 # Tensorflow, 20230130

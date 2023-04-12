@@ -2,9 +2,8 @@ build -c opt
 build --cxxopt=-std=c++17
 build --host_cxxopt=-std=c++17
 build --experimental_repo_remote_exec
-
-# TODO(fchern): Use non-hardcode path.
-build --action_env=PYTHON_BIN_PATH="/usr/bin/python3"
-build --action_env=PYTHON_LIB_PATH="/usr/lib/python3"
-build --repo_env=PYTHON_BIN_PATH="/usr/bin/python3"
-build --python_path="/usr/bin/python3"
+build --linkopt="-lpthread -lm -framework CoreFoundation"
+build --action_env=PYTHON_BIN_PATH="/Users/pierremarcenac/.pyenv/shims/python"
+build --python_path="/Users/pierremarcenac/.pyenv/shims/python"
+build --action_env=PYTHON_LIB_PATH="/Users/pierremarcenac/.pyenv/versions/python3.10/lib/python3.10/site-packages"
+build --action_env=CXXFLAGS=-stdlib=libc++ --action_env=LDFLAGS=-stdlib=libc++ --action_env=BAZEL_CXXOPTS=-stdlib=libc++ --action_env=BAZEL_LINKOPTS=-lc++:-lm

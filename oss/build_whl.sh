@@ -4,7 +4,7 @@
 set -e -x
 
 export PYTHON_VERSION="${PYTHON_VERSION}"
-PYTHON="python${PYTHON_VERSION}"
+PYTHON="python"
 PYTHON_MAJOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.major)')
 PYTHON_MINOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.minor)')
 BAZEL_FLAGS="--crosstool_top="
@@ -21,18 +21,20 @@ function main() {
   write_to_bazelrc "build -c opt"
   write_to_bazelrc "build --cxxopt=-std=c++17"
   write_to_bazelrc "build --host_cxxopt=-std=c++17"
-  write_to_bazelrc "build --linkopt=\"-lrt -lm\""
+  # write_to_bazelrc "build --linkopt=\"-lrt -lm\""
   write_to_bazelrc "build --experimental_repo_remote_exec"
-  write_to_bazelrc "build --action_env=PYTHON_BIN_PATH=\"/usr/bin/${PYTHON}\""
-  write_to_bazelrc "build --action_env=PYTHON_LIB_PATH=\"/usr/lib/${PYTHON}\""
-  write_to_bazelrc "build --python_path=\"/usr/bin/${PYTHON}\""
+  write_to_bazelrc "build --action_env=PYTHON_BIN_PATH=\"/Users/pierremarcenac/.pyenv/shims/python\""
+  write_to_bazelrc "build --action_env=PYTHON_LIB_PATH=\"/Users/pierremarcenac/.pyenv/versions/python3.10/lib/python3.10/site-packages\""
+  write_to_bazelrc "build --python_path=\"/Users/pierremarcenac/.pyenv/shims/python\""
+
+  ${PYTHON} -m pip install absl-py etils wheel
 
   # Using a previous version of Blaze to avoid:
   # https://github.com/bazelbuild/bazel/issues/8622
   export USE_BAZEL_VERSION=5.4.0
-  bazel clean
-  bazel build ${BAZEL_FLAGS} ...
-  bazel test ${BAZEL_FLAGS} --verbose_failures --test_output=errors ...
+  bazel clean --expunge
+  bazel build //...
+  bazel test --verbose_failures --test_output=errors //...
 
   DEST="/tmp/array_record/all_dist"
   # Create the directory, then do dirname on a non-existent file inside it to
