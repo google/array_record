@@ -227,6 +227,18 @@ class ArrayRecordDataSource:
         lambda x: x.num_records, self._read_instructions
     )
     self._prefix_sums = list(itertools.accumulate(records_per_instruction))
+    self._readers = [None] * len(self._read_instructions)
+
+  def __enter__(self):
+    logging.debug("__enter__ for ArrayRecordDataSource is called.")
+    return self
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    logging.debug("__exit__ for ArrayRecordDataSource is called.")
+    for reader in self._readers:
+      if reader:
+        reader.close()
+    self._readers = [None] * len(self._read_instructions)
 
   def __len__(self) -> int:
     return self._num_records
@@ -260,6 +272,7 @@ class ArrayRecordDataSource:
     return positions_and_indices
 
   def __getitem__(self, record_keys: Sequence[int]) -> Sequence[Any]:
+
     def read_records(
         reader_idx: int, reader_positions_and_indices: Sequence[Tuple[int, int]]
     ) -> Sequence[Tuple[Any, int]]:
@@ -302,15 +315,18 @@ class ArrayRecordDataSource:
         sorted_records[index] = record
     return sorted_records
 
-  def has_open_readers(self):
-    return any(self._readers)
+  def __getstate__(self):
+    logging.debug("__getstate__ for ArrayRecordDataSource is called.")
+    state = self.__dict__.copy()
+    del state["_readers"]
+    return state
 
-  def close(self):
-    """Closes underlying file readers and deletes them."""
-    for reader_idx, reader in enumerate(self._readers):
-      if reader:
-        reader.close()
-        self._readers[reader_idx] = None
+  def __setstate__(self, state):
+    logging.debug("__setstate__ for ArrayRecordDataSource is called.")
+    self.__dict__.update(state)
+    # We open readers lazily when we need to read from them. Thus, we don't
+    # need to re-open the same files as before pickling.
+    self._readers = [None] * len(self._read_instructions)
 
   def __repr__(self) -> str:
     """Storing a hash of paths since paths can be a very long list."""

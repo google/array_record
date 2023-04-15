@@ -50,48 +50,39 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ])
     self.assertLen(ar, 10)
 
-  def assert_underlying_readers_closed(self, array_record_data_source_instance):
-    for reader in array_record_data_source_instance._readers:
-      # some readers might be None if we didn't read records from them.
-      if reader:
-        self.assertFalse(reader.is_open())
-
   def test_array_record_data_source_single_path(self):
-    # Use a single path instead of a list of paths/file_instructions.
-    ar = array_record_data_source.ArrayRecordDataSource(
-        self.testdata_dir / "digits.array_record-00000-of-00002"
-    )
     indices_to_read = [0, 1, 2, 3, 4]
     expected_data = [b"0", b"1", b"2", b"3", b"4"]
-    actual_data = ar[indices_to_read]
-    ar.close()
+    # Use a single path instead of a list of paths/file_instructions.
+    with array_record_data_source.ArrayRecordDataSource(
+        self.testdata_dir / "digits.array_record-00000-of-00002"
+    ) as ar:
+      actual_data = ar[indices_to_read]
     self.assertEqual(expected_data, actual_data)
-    self.assert_underlying_readers_closed(ar)
+    self.assertTrue(all(reader is None for reader in ar._readers))
 
   def test_array_record_data_source_reverse_order(self):
-    ar = array_record_data_source.ArrayRecordDataSource([
-        self.testdata_dir / "digits.array_record-00000-of-00002",
-        self.testdata_dir / "digits.array_record-00001-of-00002",
-    ])
     indices_to_read = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
     expected_data = [b"9", b"8", b"7", b"6", b"5", b"4", b"3", b"2", b"1", b"0"]
-    actual_data = ar[indices_to_read]
-    ar.close()
-    self.assertEqual(expected_data, actual_data)
-    self.assert_underlying_readers_closed(ar)
-
-  def test_array_record_data_source_random_order(self):
-    ar = array_record_data_source.ArrayRecordDataSource([
+    with array_record_data_source.ArrayRecordDataSource([
         self.testdata_dir / "digits.array_record-00000-of-00002",
         self.testdata_dir / "digits.array_record-00001-of-00002",
-    ])
+    ]) as ar:
+      actual_data = ar[indices_to_read]
+    self.assertEqual(expected_data, actual_data)
+    self.assertTrue(all(reader is None for reader in ar._readers))
+
+  def test_array_record_data_source_random_order(self):
     # some random permutation
     indices_to_read = [3, 0, 5, 9, 2, 1, 4, 7, 8, 6]
     expected_data = [b"3", b"0", b"5", b"9", b"2", b"1", b"4", b"7", b"8", b"6"]
-    actual_data = ar[indices_to_read]
-    ar.close()
+    with array_record_data_source.ArrayRecordDataSource([
+        self.testdata_dir / "digits.array_record-00000-of-00002",
+        self.testdata_dir / "digits.array_record-00001-of-00002",
+    ]) as ar:
+      actual_data = ar[indices_to_read]
     self.assertEqual(expected_data, actual_data)
-    self.assert_underlying_readers_closed(ar)
+    self.assertTrue(all(reader is None for reader in ar._readers))
 
   def test_array_record_data_source_file_instructions(self):
     file_instruction_one = DummyFileInstruction(
@@ -112,16 +103,17 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
         examples_in_shard=99,
     )
 
-    ar = array_record_data_source.ArrayRecordDataSource(
-        [file_instruction_one, file_instruction_two]
-    )
-    self.assertLen(ar, 3)
     indices_to_read = [0, 1, 2]
     expected_data = [b"2", b"7", b"8"]
-    actual_data = ar[indices_to_read]
-    ar.close()
+
+    with array_record_data_source.ArrayRecordDataSource(
+        [file_instruction_one, file_instruction_two]
+    ) as ar:
+      self.assertLen(ar, 3)
+      actual_data = ar[indices_to_read]
+
     self.assertEqual(expected_data, actual_data)
-    self.assert_underlying_readers_closed(ar)
+    self.assertTrue(all(reader is None for reader in ar._readers))
 
   def test_array_record_source_reader_idx_and_position(self):
     file_instructions = [
@@ -139,7 +131,6 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
         ),
     ]
 
-    ar = array_record_data_source.ArrayRecordDataSource(file_instructions)
     expected_indices_and_positions = [
         (0, 0),
         (0, 1),
@@ -148,27 +139,32 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
         (1, 4),
         (2, 10),
     ]
-    self.assertLen(ar, 6)
-    for record_key in range(len(ar)):
-      self.assertEqual(
-          expected_indices_and_positions[record_key],
-          ar._reader_idx_and_position(record_key),
-      )
+
+    with array_record_data_source.ArrayRecordDataSource(
+        file_instructions
+    ) as ar:
+      self.assertLen(ar, 6)
+      for record_key in range(len(ar)):
+        self.assertEqual(
+            expected_indices_and_positions[record_key],
+            ar._reader_idx_and_position(record_key),
+        )
 
   def test_array_record_source_reader_idx_and_position_negative_idx(self):
-    ar = array_record_data_source.ArrayRecordDataSource([
+    with array_record_data_source.ArrayRecordDataSource([
         self.testdata_dir / "digits.array_record-00000-of-00002",
         self.testdata_dir / "digits.array_record-00001-of-00002",
-    ])
-    with self.assertRaises(ValueError):
-      ar._reader_idx_and_position(-1)
+    ]) as ar:
+      with self.assertRaises(ValueError):
+        ar._reader_idx_and_position(-1)
 
-    with self.assertRaises(ValueError):
-      ar._reader_idx_and_position(len(ar))
+      with self.assertRaises(ValueError):
+        ar._reader_idx_and_position(len(ar))
 
   def test_array_record_source_empty_sequence(self):
     with self.assertRaises(ValueError):
-      array_record_data_source.ArrayRecordDataSource([])
+      with array_record_data_source.ArrayRecordDataSource([]):
+        pass
 
   def test_repr(self):
     ar = array_record_data_source.ArrayRecordDataSource([
