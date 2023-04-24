@@ -54,6 +54,7 @@ cc_library(
     deps = [
         "@com_google_absl//absl/flags:flag",
         "@eigen3//:eigen3",
+        "@highwayhash//:hh_neon",
     ],
 )
 
@@ -123,6 +124,7 @@ cc_library(
         "@com_google_riegeli//riegeli/chunk_encoding:simple_encoder",
         "@com_google_riegeli//riegeli/chunk_encoding:transpose_encoder",
         "@com_google_riegeli//riegeli/records:records_metadata_cc_proto",
+        "@highwayhash//:hh_neon",
     ],
 )
 
@@ -171,6 +173,7 @@ cc_library(
         "@com_google_riegeli//riegeli/chunk_encoding:chunk_decoder",
         "@com_google_riegeli//riegeli/records:chunk_reader",
         "@com_google_riegeli//riegeli/records:record_position",
+        "@highwayhash//:hh_neon",
     ],
 )
 

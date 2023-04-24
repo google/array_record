@@ -17,6 +17,7 @@ pybind_extension(
         "@com_google_absl//absl/strings",
         "@com_google_riegeli//riegeli/bytes:fd_reader",
         "@com_google_riegeli//riegeli/bytes:fd_writer",
+        "@highwayhash//:hh_neon",
     ],
 )
 

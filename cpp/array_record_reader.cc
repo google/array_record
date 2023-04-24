@@ -317,7 +317,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
     return absl::OkStatus();
   }
   uint64_t num_chunk_groups =
-      CeilOfRatio(state_->footer.size(), state_->chunk_group_size);
+      CeilOfRatio<uint64_t>(state_->footer.size(), state_->chunk_group_size);
   const auto reader = get_backing_reader();
   Reader* mutable_reader = const_cast<Reader*>(
       reinterpret_cast<const Reader*>(reader.get()));
@@ -326,7 +326,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         uint64_t chunk_idx_start = buf_idx * state_->chunk_group_size;
         // inclusive index, not the conventional exclusive index.
         uint64_t last_chunk_idx =
-            std::min((buf_idx + 1) * state_->chunk_group_size - 1,
+            std::min<uint64_t>((buf_idx + 1) * state_->chunk_group_size - 1,
                      state_->footer.size() - 1);
         uint64_t buf_len = state_->ChunkEndOffset(last_chunk_idx) -
                            state_->footer[chunk_idx_start].chunk_offset();
@@ -654,7 +654,7 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
     std::vector<ChunkDecoder> decoders;
     decoders.reserve(state_->chunk_group_size);
     uint64_t chunk_start = buffer_idx * state_->chunk_group_size;
-    uint64_t chunk_end = std::min(state_->footer.size(),
+    uint64_t chunk_end = std::min<uint64_t>(state_->footer.size(),
                                   (buffer_idx + 1) * state_->chunk_group_size);
     const auto reader = get_backing_reader();
     for (uint64_t chunk_idx = chunk_start; chunk_idx < chunk_end; ++chunk_idx) {
@@ -693,7 +693,7 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
     std::vector<uint64_t> chunk_offsets;
     chunk_offsets.reserve(state_->chunk_group_size);
     uint64_t chunk_start = buffer_to_add * state_->chunk_group_size;
-    uint64_t chunk_end = std::min(
+    uint64_t chunk_end = std::min<uint64_t>(
         state_->footer.size(), (buffer_to_add + 1) * state_->chunk_group_size);
     for (uint64_t chunk_idx = chunk_start; chunk_idx < chunk_end; ++chunk_idx) {
       chunk_offsets.push_back(state_->footer[chunk_idx].chunk_offset());
