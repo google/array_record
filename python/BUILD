@@ -46,6 +46,7 @@ py_test(
     srcs = ["array_record_data_source_test.py"],
     args = ["--test_srcdir=python/testdata"],
     data = [
+        ":array_record_module.so",
         "//python/testdata:digits.array_record-00000-of-00002",
         "//python/testdata:digits.array_record-00001-of-00002",
     ],

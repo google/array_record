@@ -38,6 +38,7 @@ import hashlib
 import itertools
 import os
 import pathlib
+import re
 import typing
 from typing import Any, Callable, List, Mapping, Protocol, Sequence, Tuple, TypeVar, Union
 
@@ -169,6 +170,35 @@ def _get_read_instructions(
   )
 
 
+def _check_group_size(
+    filename: epath.PathLike, reader: ArrayRecordReader
+) -> None:
+  """Logs an error if the group size of the underlying file is not 1."""
+  options = reader.writer_options_string()
+  # The ArrayRecord Python API does not include methods to parse the options.
+  # We will likely move this to C++ soon. In the meantime, we just test if
+  # 'group_size:1' is in the options string.
+  # The string might be empty for old files written before October 2022.
+  if not options:
+    return
+  group_size = re.search(r"group_size:(\d+),", options)
+  if not group_size:
+    raise ValueError(
+        f"Couldn't detect group_size for {filename}. Extracted writer options:"
+        f" {options}."
+    )
+  if group_size[1] != "1":
+    logging.error(
+        (
+            "File %s was created with group size %s. Grain requires group size"
+            " 1 for good performance. Please re-generate your ArrayRecord files"
+            " with 'group_size:1'."
+        ),
+        filename,
+        group_size[1],
+    )
+
+
 class ArrayRecordDataSource:
   """Datasource for ArrayRecord files."""
 
@@ -284,6 +314,10 @@ class ArrayRecordDataSource:
             self._read_instructions[reader_idx].filename,
             options="readahead_buffer_size:0",
             file_reader_buffer_size=32768,
+        )
+        _check_group_size(
+            self._read_instructions[reader_idx].filename,
+            self._readers[reader_idx],
         )
       positions, indices = list(zip(*reader_positions_and_indices))
       records = self._readers[reader_idx].read(positions)  # pytype: disable=attribute-error
