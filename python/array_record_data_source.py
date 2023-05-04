@@ -40,7 +40,7 @@ import os
 import pathlib
 import re
 import typing
-from typing import Any, Callable, List, Mapping, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, List, Mapping, overload, Protocol, Sequence, Tuple, TypeVar, Union
 
 from absl import flags
 from absl import logging
@@ -301,24 +301,37 @@ class ArrayRecordDataSource:
         positions_and_indices[reader_idx] = [(position, idx)]
     return positions_and_indices
 
-  def __getitem__(self, record_keys: Sequence[int]) -> Sequence[Any]:
+  def _ensure_reader_exists(self, reader_idx: int) -> None:
+    """Threadsafe method to create corresponding reader if it doesn't exist."""
+    if self._readers[reader_idx] is not None:
+      return
+    filename = self._read_instructions[reader_idx].filename
+    reader = ArrayRecordReader(
+        filename,
+        options="readahead_buffer_size:0",
+        file_reader_buffer_size=32768,
+    )
+    _check_group_size(filename, reader)
+    self._readers[reader_idx] = reader
+
+  @overload
+  def __getitem__(self, record_key: Sequence[int]) -> Sequence[bytes]:
+    ...
+
+  def __getitem__(self, record_key: int) -> bytes:
+    if isinstance(record_key, int):
+      reader_idx, position = self._reader_idx_and_position(record_key)
+      self._ensure_reader_exists(reader_idx)
+      return self._readers[reader_idx].read([position])[0]
+
+    record_keys: Sequence[int] = record_key
 
     def read_records(
         reader_idx: int, reader_positions_and_indices: Sequence[Tuple[int, int]]
     ) -> Sequence[Tuple[Any, int]]:
       """Reads records using the given reader keeping track of the indices."""
       # Initialize readers lazily when we need to read from them.
-      if self._readers[reader_idx] is None:
-        # See b/262550570 for the readahead buffer size.
-        self._readers[reader_idx] = ArrayRecordReader(
-            self._read_instructions[reader_idx].filename,
-            options="readahead_buffer_size:0",
-            file_reader_buffer_size=32768,
-        )
-        _check_group_size(
-            self._read_instructions[reader_idx].filename,
-            self._readers[reader_idx],
-        )
+      self._ensure_reader_exists(reader_idx)
       positions, indices = list(zip(*reader_positions_and_indices))
       records = self._readers[reader_idx].read(positions)  # pytype: disable=attribute-error
       return list(zip(records, indices))
@@ -343,7 +356,7 @@ class ArrayRecordDataSource:
         )
     )
 
-    sorted_records = [None] * len(record_keys)
+    sorted_records = [b""] * len(record_keys)
     for single_reader_records_with_indices in records_with_indices:
       for record, index in single_reader_records_with_indices:
         sorted_records[index] = record
