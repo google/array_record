@@ -116,7 +116,7 @@ struct ArrayRecordReaderBase::ArrayRecordReaderState {
   uint64_t record_group_size = 0;
   uint64_t chunk_group_size = 0;
   uint64_t footer_offset = 0;
-  std::vector<ArrayRecordFooter> footer;
+  std::vector<uint64_t> chunk_offsets;
 
   // Objects for managing sequential reads
   uint64_t record_idx = 0;
@@ -129,10 +129,10 @@ struct ArrayRecordReaderBase::ArrayRecordReaderState {
   std::optional<std::string> writer_options = std::nullopt;
 
   uint64_t ChunkEndOffset(uint64_t chunk_idx) const {
-    if (chunk_idx == footer.size() - 1) {
+    if (chunk_idx == chunk_offsets.size() - 1) {
       return footer_offset;
     }
-    return footer[chunk_idx + 1].chunk_offset();
+    return chunk_offsets[chunk_idx + 1];
   }
 };
 
@@ -274,34 +274,40 @@ void ArrayRecordReaderBase::Initialize() {
   {
     AR_ENDO_SCOPE("Reading footer body");
     auto num_chunks = footer_metadata.array_record_metadata().num_chunks();
-    state_->footer.resize(num_chunks);
-    for (auto i : IndicesOf(state_->footer)) {
-      if (!footer_decoder.ReadRecord(state_->footer[i])) {
+    state_->chunk_offsets.reserve(num_chunks);
+    for (int i = 0; i < num_chunks; ++i) {
+      ArrayRecordFooter footer;
+      if (!footer_decoder.ReadRecord(footer)) {
         Fail(Annotate(footer_decoder.status(),
                       "Failed to read ArrayRecordFooter"));
         return;
       }
-    }
-    if (!state_->footer.empty()) {
-      state_->record_group_size = state_->footer.front().num_records();
-      if (!state_->footer.back().has_chunk_offset()) {
+      if (!footer.has_chunk_offset()) {
         Fail(InvalidArgumentError("Invalid footer"));
         return;
       }
+      if (i == 0) {
+        // Detect group size from first footer. This should match the group_size
+        // in writer options but writer_options is not always available.
+        state_->record_group_size = footer.num_records();
+      }
+      state_->chunk_offsets.push_back(footer.chunk_offset());
+    }
+    if (!state_->chunk_offsets.empty()) {
       // Finds minimal chunk_group_size that is larger equals to the readahead
       // buffer. A chunk_group corresponds to a PRead call. Smaller
       // chunk_group_size is better for random access, the converse is better
       // for sequential reads.
-      for (auto i : Seq(state_->footer.size())) {
+      for (auto i : Seq(state_->chunk_offsets.size())) {
         uint64_t buf_size =
-            state_->ChunkEndOffset(i) - state_->footer.front().chunk_offset();
+            state_->ChunkEndOffset(i) - state_->chunk_offsets.front();
         if (buf_size >= state_->options.readahead_buffer_size()) {
           state_->chunk_group_size = i + 1;
           break;
         }
       }
       if (!state_->chunk_group_size) {
-        state_->chunk_group_size = state_->footer.size();
+        state_->chunk_group_size = state_->chunk_offsets.size();
       }
     }
   }
@@ -313,11 +319,11 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
   if (!ok()) {
     return status();
   }
-  if (state_->footer.empty()) {
+  if (state_->chunk_offsets.empty()) {
     return absl::OkStatus();
   }
   uint64_t num_chunk_groups =
-      CeilOfRatio(state_->footer.size(), state_->chunk_group_size);
+      CeilOfRatio(state_->chunk_offsets.size(), state_->chunk_group_size);
   const auto reader = get_backing_reader();
   Reader* mutable_reader = const_cast<Reader*>(
       reinterpret_cast<const Reader*>(reader.get()));
@@ -327,9 +333,9 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         // inclusive index, not the conventional exclusive index.
         uint64_t last_chunk_idx =
             std::min((buf_idx + 1) * state_->chunk_group_size - 1,
-                     state_->footer.size() - 1);
+                     state_->chunk_offsets.size() - 1);
         uint64_t buf_len = state_->ChunkEndOffset(last_chunk_idx) -
-                           state_->footer[chunk_idx_start].chunk_offset();
+                           state_->chunk_offsets[chunk_idx_start];
         AR_ENDO_JOB(
             "ArrayRecordReaderBase::ParallelReadRecords",
             absl::StrCat("buffer_idx: ", buf_idx, " buffer_len: ", buf_len));
@@ -337,15 +343,14 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         MaskedReader masked_reader(riegeli::kClosed);
         {
           AR_ENDO_SCOPE("MaskedReader");
-          masked_reader =
-              MaskedReader(mutable_reader->NewReader(
-                               state_->footer[chunk_idx_start].chunk_offset()),
-                           buf_len);
+          masked_reader = MaskedReader(
+              mutable_reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
+              buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
              ++chunk_idx) {
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
-          masked_reader.Seek(state_->footer[chunk_idx].chunk_offset());
+          masked_reader.Seek(state_->chunk_offsets[chunk_idx]);
           riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
           Chunk chunk;
           if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
@@ -385,7 +390,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
   if (!ok()) {
     return status();
   }
-  if (state_->footer.empty()) {
+  if (state_->chunk_offsets.empty()) {
     return absl::OkStatus();
   }
   if (end > NumRecords() || begin >= end) {
@@ -409,7 +414,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
             chunk_idx_begin + (buf_idx + 1) * state_->chunk_group_size - 1,
             chunk_idx_end - 1);
         uint64_t buf_len = state_->ChunkEndOffset(last_chunk_idx) -
-                           state_->footer[chunk_idx_start].chunk_offset();
+                           state_->chunk_offsets[chunk_idx_start];
         AR_ENDO_JOB(
             "ArrayRecordReaderBase::ParallelReadRecordsWithRange",
             absl::StrCat("buffer_idx: ", buf_idx, " buffer_len: ", buf_len));
@@ -417,15 +422,14 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
         MaskedReader masked_reader(riegeli::kClosed);
         {
           AR_ENDO_SCOPE("MaskedReader");
-          masked_reader =
-              MaskedReader(mutable_reader->NewReader(
-                               state_->footer[chunk_idx_start].chunk_offset()),
-                           buf_len);
+          masked_reader = MaskedReader(
+              mutable_reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
+              buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
              ++chunk_idx) {
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
-          masked_reader.Seek(state_->footer[chunk_idx].chunk_offset());
+          masked_reader.Seek(state_->chunk_offsets[chunk_idx]);
           riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
           Chunk chunk;
           if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
@@ -475,7 +479,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
   if (!ok()) {
     return status();
   }
-  if (state_->footer.empty()) {
+  if (state_->chunk_offsets.empty()) {
     return absl::OkStatus();
   }
 
@@ -490,7 +494,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     uint64_t indices_index;
   };
 
-  std::vector<std::vector<IndexPair>> per_chunk_indices(state_->footer.size());
+  std::vector<std::vector<IndexPair>> per_chunk_indices(
+      state_->chunk_offsets.size());
   std::vector<std::vector<uint64_t>> chunk_indices_per_buffer;
   for (auto [indices_idx, record_idx] : Enumerate(indices)) {
     if (record_idx >= state_->num_records) {
@@ -502,7 +507,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     per_chunk_indices[chunk_idx].emplace_back(local_idx, indices_idx);
   }
   bool in_buffer = false;
-  for (auto i : Seq(state_->footer.size())) {
+  for (auto i : Seq(state_->chunk_offsets.size())) {
     // Find the first chunk containing indices
     if (!in_buffer) {
       if (!per_chunk_indices[i].empty()) {
@@ -531,7 +536,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
         auto buffer_chunks =
             absl::MakeConstSpan(chunk_indices_per_buffer[buf_idx]);
         uint64_t buf_len = state_->ChunkEndOffset(buffer_chunks.back()) -
-                           state_->footer[buffer_chunks[0]].chunk_offset();
+                           state_->chunk_offsets[buffer_chunks[0]];
         AR_ENDO_JOB(
             "ArrayRecordReaderBase::ParallelReadRecordsWithIndices",
             absl::StrCat("buffer_idx: ", buf_idx, " buffer_len: ", buf_len));
@@ -540,12 +545,12 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader =
               MaskedReader(mutable_reader->NewReader(
-                               state_->footer[buffer_chunks[0]].chunk_offset()),
+                               state_->chunk_offsets[buffer_chunks[0]]),
                            buf_len);
         }
         for (auto chunk_idx : buffer_chunks) {
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
-          masked_reader.Seek(state_->footer[chunk_idx].chunk_offset());
+          masked_reader.Seek(state_->chunk_offsets[chunk_idx]);
           riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
           Chunk chunk;
           if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
@@ -654,11 +659,11 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
     std::vector<ChunkDecoder> decoders;
     decoders.reserve(state_->chunk_group_size);
     uint64_t chunk_start = buffer_idx * state_->chunk_group_size;
-    uint64_t chunk_end = std::min(state_->footer.size(),
+    uint64_t chunk_end = std::min(state_->chunk_offsets.size(),
                                   (buffer_idx + 1) * state_->chunk_group_size);
     const auto reader = get_backing_reader();
     for (uint64_t chunk_idx = chunk_start; chunk_idx < chunk_end; ++chunk_idx) {
-      uint64_t chunk_offset = state_->footer[chunk_idx].chunk_offset();
+      uint64_t chunk_offset = state_->chunk_offsets[chunk_idx];
       uint64_t chunk_end_offset = state_->ChunkEndOffset(chunk_idx);
       decoders.push_back(
           ReadChunk(reader, chunk_offset, chunk_end_offset - chunk_offset));
@@ -678,7 +683,8 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
 
   while (state_->future_decoders.size() < max_parallelism) {
     uint64_t buffer_to_add = buffer_idx + state_->future_decoders.size();
-    if (buffer_to_add * state_->chunk_group_size >= state_->footer.size()) {
+    if (buffer_to_add * state_->chunk_group_size >=
+        state_->chunk_offsets.size()) {
       break;
     }
     // Although our internal ThreadPool takes absl::AnyInvocable which is
@@ -693,10 +699,11 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
     std::vector<uint64_t> chunk_offsets;
     chunk_offsets.reserve(state_->chunk_group_size);
     uint64_t chunk_start = buffer_to_add * state_->chunk_group_size;
-    uint64_t chunk_end = std::min(
-        state_->footer.size(), (buffer_to_add + 1) * state_->chunk_group_size);
+    uint64_t chunk_end =
+        std::min(state_->chunk_offsets.size(),
+                 (buffer_to_add + 1) * state_->chunk_group_size);
     for (uint64_t chunk_idx = chunk_start; chunk_idx < chunk_end; ++chunk_idx) {
-      chunk_offsets.push_back(state_->footer[chunk_idx].chunk_offset());
+      chunk_offsets.push_back(state_->chunk_offsets[chunk_idx]);
     }
     uint64_t buffer_len =
         state_->ChunkEndOffset(chunk_end - 1) - chunk_offsets[0];
