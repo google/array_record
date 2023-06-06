@@ -218,8 +218,8 @@ class ArrayRecordDataSource:
     my_file-00001-of-00002. If both files have 100 records each, then we can
     read keys in [0, 199] (record_keys can be anywhere in that range).
     record_key 40 will map to the record at position 40 in
-    my_file-00000-of-00000 and key 121 would map to the record at position 21
-    in my_file-00000-of-00002.
+    my_file-00000-of-00002 and key 121 would map to the record at position 21
+    in my_file-00001-of-00002.
 
     Args:
       paths: This can be a single path/FileInstruction or list of
