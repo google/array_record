@@ -257,7 +257,6 @@ class ArrayRecordDataSource:
         lambda x: x.num_records, self._read_instructions
     )
     self._prefix_sums = list(itertools.accumulate(records_per_instruction))
-    self._readers = [None] * len(self._read_instructions)
 
   def __enter__(self):
     logging.debug("__enter__ for ArrayRecordDataSource is called.")
