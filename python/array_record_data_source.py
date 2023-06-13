@@ -40,7 +40,7 @@ import os
 import pathlib
 import re
 import typing
-from typing import Any, Callable, List, Mapping, overload, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, List, Mapping, Protocol, Sequence, Tuple, TypeVar, Union
 
 from absl import flags
 from absl import logging
@@ -313,18 +313,20 @@ class ArrayRecordDataSource:
     _check_group_size(filename, reader)
     self._readers[reader_idx] = reader
 
-  @overload
-  def __getitem__(self, record_key: Sequence[int]) -> Sequence[bytes]:
-    ...
-
   def __getitem__(self, record_key: int) -> bytes:
-    if isinstance(record_key, int):
-      reader_idx, position = self._reader_idx_and_position(record_key)
-      self._ensure_reader_exists(reader_idx)
-      return self._readers[reader_idx].read([position])[0]
+    if not isinstance(record_key, int):
+      logging.error(
+          "Calling ArrayRecordDataSource.__getitem__() with sequence "
+          "of record keys (%s) is deprecated. Either pass a single "
+          "integer or switch to __getitems__().",
+          record_key,
+      )
+      return self.__getitems__(record_key)
+    reader_idx, position = self._reader_idx_and_position(record_key)
+    self._ensure_reader_exists(reader_idx)
+    return self._readers[reader_idx].read([position])[0]
 
-    record_keys: Sequence[int] = record_key
-
+  def __getitems__(self, record_keys: Sequence[int]) -> Sequence[bytes]:
     def read_records(
         reader_idx: int, reader_positions_and_indices: Sequence[Tuple[int, int]]
     ) -> Sequence[Tuple[Any, int]]:

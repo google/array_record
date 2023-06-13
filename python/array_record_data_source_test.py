@@ -97,7 +97,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     with array_record_data_source.ArrayRecordDataSource(
         self.testdata_dir / "digits.array_record-00000-of-00002"
     ) as ar:
-      actual_data = ar[indices_to_read]
+      actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
 
@@ -108,7 +108,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
         self.testdata_dir / "digits.array_record-00000-of-00002",
         self.testdata_dir / "digits.array_record-00001-of-00002",
     ]) as ar:
-      actual_data = ar[indices_to_read]
+      actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
 
@@ -120,11 +120,11 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
         self.testdata_dir / "digits.array_record-00000-of-00002",
         self.testdata_dir / "digits.array_record-00001-of-00002",
     ]) as ar:
-      actual_data = ar[indices_to_read]
+      actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
 
-  def test_array_record_data_source_single_element_lookup(self):
+  def test_array_record_data_source_batched_element_lookup(self):
     # some random permutation
     indices_to_read = [3, 0, 5, 9, 2, 1, 4, 7, 8, 6]
     expected_data = [b"3", b"0", b"5", b"9", b"2", b"1", b"4", b"7", b"8", b"6"]
@@ -132,7 +132,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
         self.testdata_dir / "digits.array_record-00000-of-00002",
         self.testdata_dir / "digits.array_record-00001-of-00002",
     ]) as ar:
-      actual_data = [ar[index] for index in indices_to_read]  # pytype: disable=unsupported-operands
+      actual_data = ar.__getitems__(indices_to_read)
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
 
@@ -162,7 +162,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
         [file_instruction_one, file_instruction_two]
     ) as ar:
       self.assertLen(ar, 3)
-      actual_data = ar[indices_to_read]
+      actual_data = [ar[x] for x in indices_to_read]
 
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
