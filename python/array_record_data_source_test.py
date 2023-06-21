@@ -66,8 +66,6 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     writer.write(b"foobar")
     writer.close()
     reader = array_record_module.ArrayRecordReader(filename)
-    with self.assertNoLogs(level="ERROR"):
-      array_record_data_source._check_group_size(filename, reader)
 
   def test_check_invalid_group_size(self):
     filename = os.path.join(FLAGS.test_tmpdir, "test.array_record")

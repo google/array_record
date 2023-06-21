@@ -18,4 +18,5 @@ python3 -m pip install --upgrade twine
 python3 -m twine upload /tmp/array_record/all_dist/*-any.whl
 ```
 
-Authenticate with Twine by following https://pypi.org/help/#apitoken.
+Authenticate with Twine by following https://pypi.org/help/#apitoken and editing
+your `~/.pypirc`.

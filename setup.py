@@ -10,7 +10,7 @@ REQUIRED_PACKAGES = [
 
 setup(
     name='array_record',
-    version='0.2.0',
+    version='0.3.0',
     description='A file format that achieves a new frontier of IO efficiency',
     author='ArrayRecord team',
     author_email='no-reply@google.com',

@@ -2,10 +2,7 @@
 
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
-package(
-    default_applicable_licenses = ["//third_party/array_record:license"],
-    default_visibility = ["//visibility:public"],
-)
+package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])
 
