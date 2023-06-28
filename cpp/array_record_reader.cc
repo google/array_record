@@ -313,6 +313,14 @@ void ArrayRecordReaderBase::Initialize() {
   }
 }
 
+uint64_t ArrayRecordReaderBase::ChunkStartOffset(uint64_t chunk_idx) const {
+  return state_->chunk_offsets[chunk_idx];
+}
+
+uint64_t ArrayRecordReaderBase::ChunkEndOffset(uint64_t chunk_idx) const {
+  return state_->ChunkEndOffset(chunk_idx);
+}
+
 absl::Status ArrayRecordReaderBase::ParallelReadRecords(
     absl::FunctionRef<absl::Status(uint64_t, absl::string_view)> callback)
     const {
@@ -591,7 +599,7 @@ uint64_t ArrayRecordReaderBase::NumRecords() const {
   return state_->num_records;
 }
 
-uint64_t ArrayRecordReaderBase::RecordGroupSize() {
+uint64_t ArrayRecordReaderBase::RecordGroupSize() const {
   if (!ok()) {
     return 0;
   }
