@@ -244,7 +244,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
   // Number of records in each compressed chunk configured at the file writing
   // stage by `ArrayRecordWriterBase::Options::set_group_size`. The acutal
   // number of records per group could be smaller equals to this number.
-  uint64_t RecordGroupSize();
+  uint64_t RecordGroupSize() const;
 
   // Index of the record to be read.
   uint64_t RecordIndex() const;
@@ -287,6 +287,8 @@ class ArrayRecordReaderBase : public riegeli::Object {
   ArrayRecordReaderBase& operator=(ArrayRecordReaderBase&& other) noexcept;
 
   void Initialize();
+  uint64_t ChunkStartOffset(uint64_t chunk_idx) const;
+  uint64_t ChunkEndOffset(uint64_t chunk_idx) const;
 
   virtual ThreadCompatibleSharedPtr<riegeli::Reader> get_backing_reader()
       const = 0;
