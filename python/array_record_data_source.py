@@ -46,8 +46,6 @@ from absl import flags
 from absl import logging
 from etils import epath
 
-from array_record.python.array_record_module import ArrayRecordReader
-
 
 # TODO(jolesiak): Decide what to do with these flags, e.g., remove them (could
 # be appropriate if we decide to use asyncio) or move them somewhere else and
@@ -155,7 +153,7 @@ def _get_read_instructions(
       path = os.fspath(path.filename)
     else:
       path = os.fspath(path)
-      reader = ArrayRecordReader(path)
+      reader = array_record.ArrayRecordReader(path)
       start = 0  # Using whole file.
       end = reader.num_records()
       reader.close()
@@ -170,8 +168,16 @@ def _get_read_instructions(
   )
 
 
+def _create_reader(filename: epath.PathLike):
+  return array_record.ArrayRecordReader(
+      filename,
+      options="readahead_buffer_size:0",
+      file_reader_buffer_size=32768,
+  )
+
+
 def _check_group_size(
-    filename: epath.PathLike, reader: ArrayRecordReader
+    filename: epath.PathLike, reader: array_record.ArrayRecordReader
 ) -> None:
   """Logs an error if the group size of the underlying file is not 1."""
   options = reader.writer_options_string()
@@ -305,11 +311,7 @@ class ArrayRecordDataSource:
     if self._readers[reader_idx] is not None:
       return
     filename = self._read_instructions[reader_idx].filename
-    reader = ArrayRecordReader(
-        filename,
-        options="readahead_buffer_size:0",
-        file_reader_buffer_size=32768,
-    )
+    reader = _create_reader(filename)
     _check_group_size(filename, reader)
     self._readers[reader_idx] = reader
 
@@ -324,7 +326,9 @@ class ArrayRecordDataSource:
       return self.__getitems__(record_key)
     reader_idx, position = self._reader_idx_and_position(record_key)
     self._ensure_reader_exists(reader_idx)
-    return self._readers[reader_idx].read([position])[0]
+    if hasattr(self._readers[reader_idx], "read"):
+      return self._readers[reader_idx].read([position])[0]
+    return self._readers[reader_idx][position]
 
   def __getitems__(self, record_keys: Sequence[int]) -> Sequence[bytes]:
     def read_records(
@@ -334,7 +338,10 @@ class ArrayRecordDataSource:
       # Initialize readers lazily when we need to read from them.
       self._ensure_reader_exists(reader_idx)
       positions, indices = list(zip(*reader_positions_and_indices))
-      records = self._readers[reader_idx].read(positions)  # pytype: disable=attribute-error
+      if hasattr(self._readers[reader_idx], "read"):
+        records = self._readers[reader_idx].read(positions)  # pytype: disable=attribute-error
+      else:
+        records = [self._readers[reader_idx][p] for p in positions]
       return list(zip(records, indices))
 
     positions_and_indices = self._split_keys_per_reader(record_keys)

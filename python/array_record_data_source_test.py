@@ -21,6 +21,7 @@ from unittest import mock
 
 from absl import flags
 from absl.testing import absltest
+from absl.testing import flagsaver
 from absl.testing import parameterized
 
 from array_record.python import array_record_data_source
@@ -124,7 +125,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
 
-  def test_array_record_data_source_batched_element_lookup(self):
+  def test_array_record_data_source_random_order_batched(self):
     # some random permutation
     indices_to_read = [3, 0, 5, 9, 2, 1, 4, 7, 8, 6]
     expected_data = [b"3", b"0", b"5", b"9", b"2", b"1", b"4", b"7", b"8", b"6"]
