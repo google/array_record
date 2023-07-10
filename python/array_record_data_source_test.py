@@ -102,6 +102,18 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
 
+  def test_array_record_data_source_string_read_instructions(self):
+    indices_to_read = [0, 1, 2, 3, 4]
+    expected_data = [b"0", b"1", b"2", b"7", b"8"]
+    # Use a single path instead of a list of paths/file_instructions.
+    ar = array_record_data_source.ArrayRecordDataSource([
+        self.testdata_dir / "digits.array_record-00000-of-00002[0:3]",
+        self.testdata_dir / "digits.array_record-00001-of-00002[2:4]",
+    ])
+    self.assertLen(ar, 5)
+    actual_data = [ar[x] for x in indices_to_read]
+    self.assertEqual(expected_data, actual_data)
+
   def test_array_record_data_source_reverse_order(self):
     indices_to_read = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
     expected_data = [b"9", b"8", b"7", b"6", b"5", b"4", b"3", b"2", b"1", b"0"]

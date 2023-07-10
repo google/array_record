@@ -151,6 +151,10 @@ def _get_read_instructions(
       start = path.skip
       end = path.skip + path.take
       path = os.fspath(path.filename)
+    elif m := re.fullmatch(r"(.*)\[(\d+):(\d+)\]", os.fspath(path)):
+      path = m.group(1)
+      start = int(m.group(2))
+      end = int(m.group(3))
     else:
       path = os.fspath(path)
       reader = array_record.ArrayRecordReader(path)
