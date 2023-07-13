@@ -46,7 +46,6 @@ from absl import flags
 from absl import logging
 from etils import epath
 
-
 # TODO(jolesiak): Decide what to do with these flags, e.g., remove them (could
 # be appropriate if we decide to use asyncio) or move them somewhere else and
 # pass the number of threads as an argument. For now, since we experiment, it's

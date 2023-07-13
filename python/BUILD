@@ -34,6 +34,7 @@ py_library(
     srcs = ["array_record_data_source.py"],
     data = [":array_record_module.so"],
     deps = [
+        "//pyglib:gfile",
         # Implicit etils (/epath) dependency.
         "//third_party/py/grain/google/ntk/array_record/python:fast_array_record",
     ],
