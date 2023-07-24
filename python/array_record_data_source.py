@@ -172,6 +172,7 @@ def _get_read_instructions(
 
 
 def _create_reader(filename: epath.PathLike):
+  """Returns an ArrayRecordReader for the given filename."""
   return array_record.ArrayRecordReader(
       filename,
       options="readahead_buffer_size:0",
