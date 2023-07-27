@@ -40,7 +40,7 @@ import os
 import pathlib
 import re
 import typing
-from typing import Any, Callable, List, Mapping, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, List, Mapping, Protocol, Sequence, SupportsIndex, Tuple, TypeVar, Union
 
 from absl import flags
 from absl import logging
@@ -282,8 +282,11 @@ class ArrayRecordDataSource:
   def __len__(self) -> int:
     return self._num_records
 
-  def _reader_idx_and_position(self, record_key: int) -> Tuple[int, int]:
+  def _reader_idx_and_position(
+      self, record_key: SupportsIndex
+  ) -> Tuple[int, int]:
     """Computes reader idx and position of given record key."""
+    record_key = record_key.__index__()
     if record_key < 0 or record_key >= self._num_records:
       raise ValueError("Record key should be in [0, num_records)")
     reader_idx = bisect.bisect_right(self._prefix_sums, record_key)
@@ -298,7 +301,7 @@ class ArrayRecordDataSource:
     )
 
   def _split_keys_per_reader(
-      self, record_keys: Sequence[int]
+      self, record_keys: Sequence[SupportsIndex]
   ) -> Mapping[int, Sequence[Tuple[int, int]]]:
     """Splits record_keys among readers."""
     positions_and_indices = {}
@@ -319,22 +322,16 @@ class ArrayRecordDataSource:
     _check_group_size(filename, reader)
     self._readers[reader_idx] = reader
 
-  def __getitem__(self, record_key: int) -> bytes:
-    if not isinstance(record_key, int):
-      logging.error(
-          "Calling ArrayRecordDataSource.__getitem__() with sequence "
-          "of record keys (%s) is deprecated. Either pass a single "
-          "integer or switch to __getitems__().",
-          record_key,
-      )
-      return self.__getitems__(record_key)
+  def __getitem__(self, record_key: SupportsIndex) -> bytes:
     reader_idx, position = self._reader_idx_and_position(record_key)
     self._ensure_reader_exists(reader_idx)
     if hasattr(self._readers[reader_idx], "read"):
       return self._readers[reader_idx].read([position])[0]
     return self._readers[reader_idx][position]
 
-  def __getitems__(self, record_keys: Sequence[int]) -> Sequence[bytes]:
+  def __getitems__(
+      self, record_keys: Sequence[SupportsIndex]
+  ) -> Sequence[bytes]:
     def read_records(
         reader_idx: int, reader_positions_and_indices: Sequence[Tuple[int, int]]
     ) -> Sequence[Tuple[Any, int]]:

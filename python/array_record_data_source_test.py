@@ -23,6 +23,7 @@ from absl import flags
 from absl.testing import absltest
 from absl.testing import flagsaver
 from absl.testing import parameterized
+import numpy as np
 
 from array_record.python import array_record_data_source
 from array_record.python import array_record_module
@@ -136,6 +137,15 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
       actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
+
+  def test_array_record_data_source_numpy_index(self):
+    # some random permutation
+    with array_record_data_source.ArrayRecordDataSource([
+        self.testdata_dir / "digits.array_record-00000-of-00002",
+        self.testdata_dir / "digits.array_record-00001-of-00002",
+    ]) as ar:
+      actual_data = ar[np.int64(3)]
+    self.assertEqual(b"3", actual_data)
 
   def test_array_record_data_source_random_order_batched(self):
     # some random permutation
