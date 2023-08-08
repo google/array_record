@@ -8,7 +8,7 @@ export TMP_FOLDER="/tmp/array_record"
 
 # Clean previous folders/images.
 [ -f $TMP_FOLDER ] && rm -rf $TMP_FOLDER
-for PYTHON_VERSION in 3.8 3.9 3.10
+for PYTHON_VERSION in 3.9 3.10
 do
   docker rmi -f array_record:${PYTHON_VERSION}
 done
@@ -20,7 +20,7 @@ copybara array_record/oss/copy.bara.sky g3folder_to_gitfolder ../../ \
 cd $TMP_FOLDER
 
 # Build wheel for each Python version.
-for PYTHON_VERSION in 3.8 3.9 3.10
+for PYTHON_VERSION in 3.9 3.10
 do
   DOCKER_BUILDKIT=1 docker build --progress=plain --no-cache \
     --build-arg PYTHON_VERSION=${PYTHON_VERSION} \
