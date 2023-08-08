@@ -34,9 +34,9 @@ py_library(
     srcs = ["array_record_data_source.py"],
     data = [":array_record_module.so"],
     deps = [
-        "//pyglib:gfile",
+#        "//pyglib:gfile",
         # Implicit etils (/epath) dependency.
-        "//third_party/py/grain/google/ntk/array_record/python:fast_array_record",
+#        "//third_party/py/grain/google/ntk/array_record/python:fast_array_record",
     ],
 )
 
@@ -51,8 +51,8 @@ py_test(
     ],
     deps = [
         ":array_record_data_source",
-        "//third_party/py/grain/google/ntk/array_record/python:fast_array_record",
-        "//third_party/py/numpy",
+#        "//third_party/py/grain/google/ntk/array_record/python:fast_array_record",
+#        "//third_party/py/numpy",
         "@com_google_absl_py//absl/testing:absltest",
         "@com_google_absl_py//absl/testing:flagsaver",
         "@com_google_absl_py//absl/testing:parameterized",

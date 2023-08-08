@@ -41,6 +41,7 @@ import pathlib
 import re
 import typing
 from typing import Any, Callable, List, Mapping, Protocol, Sequence, SupportsIndex, Tuple, TypeVar, Union
+import array_record.python.array_record_module as array_record_module
 
 from absl import flags
 from absl import logging
@@ -156,7 +157,7 @@ def _get_read_instructions(
       end = int(m.group(3))
     else:
       path = os.fspath(path)
-      reader = array_record.ArrayRecordReader(path)
+      reader = array_record_module.ArrayRecordReader(path)
       start = 0  # Using whole file.
       end = reader.num_records()
       reader.close()
@@ -173,7 +174,7 @@ def _get_read_instructions(
 
 def _create_reader(filename: epath.PathLike):
   """Returns an ArrayRecordReader for the given filename."""
-  return array_record.ArrayRecordReader(
+  return array_record_module.ArrayRecordReader(
       filename,
       options="readahead_buffer_size:0",
       file_reader_buffer_size=32768,
@@ -181,7 +182,7 @@ def _create_reader(filename: epath.PathLike):
 
 
 def _check_group_size(
-    filename: epath.PathLike, reader: array_record.ArrayRecordReader
+    filename: epath.PathLike, reader: array_record_module.ArrayRecordReader
 ) -> None:
   """Logs an error if the group size of the underlying file is not 1."""
   options = reader.writer_options_string()

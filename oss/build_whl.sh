@@ -3,12 +3,13 @@
 
 set -e -x
 
-export PYTHON_VERSION="${PYTHON_VERSION}"
+export PYTHON_VERSION=3
 PYTHON="python${PYTHON_VERSION}"
 PYTHON_MAJOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.major)')
 PYTHON_MINOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.minor)')
-BAZEL_FLAGS="--crosstool_top="
-BAZEL_FLAGS+="@sigbuild-r2.9-${PYTHON}_config_cuda//crosstool:toolchain"
+#BAZEL_FLAGS="--crosstool_top="
+#BAZEL_FLAGS+="@sigbuild-r2.9-${PYTHON}_config_cuda//crosstool:toolchain"
+BAZEL_FLAGS="--sandbox_debug --verbose_failures "
 
 function write_to_bazelrc() {
   echo "$1" >> .bazelrc
@@ -63,7 +64,7 @@ function main() {
   ${PYTHON} setup.py bdist_wheel --python-tag py3${PYTHON_MINOR_VERSION}
 
   echo $(date) : "=== Auditing wheel"
-  auditwheel repair --plat manylinux2014_x86_64 -w dist dist/*.whl
+  auditwheel repair --plat linux_aarch64 -w dist dist/*.whl
   echo $(date) : "=== Listing wheel"
   ls -lrt dist/*.whl
   cp dist/*.whl "${DEST}"
