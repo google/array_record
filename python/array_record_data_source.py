@@ -46,6 +46,8 @@ from absl import flags
 from absl import logging
 from etils import epath
 
+from . import array_record_module
+
 # TODO(jolesiak): Decide what to do with these flags, e.g., remove them (could
 # be appropriate if we decide to use asyncio) or move them somewhere else and
 # pass the number of threads as an argument. For now, since we experiment, it's
@@ -156,7 +158,7 @@ def _get_read_instructions(
       end = int(m.group(3))
     else:
       path = os.fspath(path)
-      reader = array_record.ArrayRecordReader(path)
+      reader = array_record_module.ArrayRecordReader(path)
       start = 0  # Using whole file.
       end = reader.num_records()
       reader.close()
@@ -173,7 +175,7 @@ def _get_read_instructions(
 
 def _create_reader(filename: epath.PathLike):
   """Returns an ArrayRecordReader for the given filename."""
-  return array_record.ArrayRecordReader(
+  return array_record_module.ArrayRecordReader(
       filename,
       options="readahead_buffer_size:0",
       file_reader_buffer_size=32768,
@@ -181,7 +183,7 @@ def _create_reader(filename: epath.PathLike):
 
 
 def _check_group_size(
-    filename: epath.PathLike, reader: array_record.ArrayRecordReader
+    filename: epath.PathLike, reader: array_record_module.ArrayRecordReader
 ) -> None:
   """Logs an error if the group size of the underlying file is not 1."""
   options = reader.writer_options_string()
