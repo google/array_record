@@ -1,14 +1,22 @@
 #!/bin/bash
-# build wheel for python version specified in $PYTHON
+# Build wheel for the python version specified by $PYTHON_VERSION.
+# Optionally, can set the environment variable $PYTHON_BIN to refer to a
+# specific python interpreter.
 
 set -e -x
 
+if [ -z ${PYTHON_BIN} ]; then
+  if [ -z ${PYTHON_VERSION} ]; then
+    PYTHON_BIN=$(which python3)
+  else
+    PYTHON_BIN=$(which python${PYTHON_VERSION})
+  fi
+fi
+
+PYTHON_MAJOR_VERSION=$(${PYTHON_BIN} -c 'import sys; print(sys.version_info.major)')
+PYTHON_MINOR_VERSION=$(${PYTHON_BIN} -c 'import sys; print(sys.version_info.minor)')
+PYTHON_VERSION="${PYTHON_MAJOR_VERSION}.${PYTHON_MINOR_VERSION}"
 export PYTHON_VERSION="${PYTHON_VERSION}"
-PYTHON="python${PYTHON_VERSION}"
-PYTHON_MAJOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.major)')
-PYTHON_MINOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.minor)')
-BAZEL_FLAGS="--crosstool_top="
-BAZEL_FLAGS+="@sigbuild-r2.9-${PYTHON}_config_cuda//crosstool:toolchain"
 
 function write_to_bazelrc() {
   echo "$1" >> .bazelrc
@@ -23,16 +31,19 @@ function main() {
   write_to_bazelrc "build --host_cxxopt=-std=c++17"
   write_to_bazelrc "build --linkopt=\"-lrt -lm\""
   write_to_bazelrc "build --experimental_repo_remote_exec"
-  write_to_bazelrc "build --action_env=PYTHON_BIN_PATH=\"/usr/bin/${PYTHON}\""
-  write_to_bazelrc "build --action_env=PYTHON_LIB_PATH=\"/usr/lib/${PYTHON}\""
-  write_to_bazelrc "build --python_path=\"/usr/bin/${PYTHON}\""
+  write_to_bazelrc "build --python_path=\"${PYTHON_BIN}\""
+
+  if [ -n "${CROSSTOOL_TOP}" ]; then
+    write_to_bazelrc "build --crosstool_top=${CROSSTOOL_TOP}"
+    write_to_bazelrc "test --crosstool_top=${CROSSTOOL_TOP}"
+  fi
 
   # Using a previous version of Blaze to avoid:
   # https://github.com/bazelbuild/bazel/issues/8622
   export USE_BAZEL_VERSION=5.4.0
   bazel clean
-  bazel build ${BAZEL_FLAGS} ...
-  bazel test ${BAZEL_FLAGS} --verbose_failures --test_output=errors ...
+  bazel build ...
+  bazel test --verbose_failures --test_output=errors ...
 
   DEST="/tmp/array_record/all_dist"
   # Create the directory, then do dirname on a non-existent file inside it to
@@ -60,10 +71,13 @@ function main() {
 
   pushd ${TMPDIR}
   echo $(date) : "=== Building wheel"
-  ${PYTHON} setup.py bdist_wheel --python-tag py3${PYTHON_MINOR_VERSION}
+  ${PYTHON_BIN} setup.py bdist_wheel --python-tag py3${PYTHON_MINOR_VERSION}
 
-  echo $(date) : "=== Auditing wheel"
-  auditwheel repair --plat manylinux2014_x86_64 -w dist dist/*.whl
+  if [ -n "${AUDITWHEEL_PLATFORM}" ]; then
+    echo $(date) : "=== Auditing wheel"
+    auditwheel repair --plat ${AUDITWHEEL_PLATFORM} -w dist dist/*.whl
+  fi
+
   echo $(date) : "=== Listing wheel"
   ls -lrt dist/*.whl
   cp dist/*.whl "${DEST}"
