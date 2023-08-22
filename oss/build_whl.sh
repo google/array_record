@@ -60,7 +60,7 @@ function main() {
 
   pushd ${TMPDIR}
   echo $(date) : "=== Building wheel"
-  ${PYTHON} setup.py bdist_wheel --python-tag py3${PYTHON_MINOR_VERSION}
+  ${PYTHON} setup.py bdist_wheel --python-tag py3${PYTHON_MAJOR_VERSION}
 
   echo $(date) : "=== Auditing wheel"
   auditwheel repair --plat manylinux2014_x86_64 -w dist dist/*.whl
