@@ -136,15 +136,17 @@ http_archive(
     urls = ["https://github.com/google/highwayhash/archive/a7f68e2f95fac08b24327d74747521cf634d5aff.zip"],  # 2023-08-09
 )
 
-# Tensorflow, 20230130
+# Tensorflow, 20230705
 http_archive(
     name = "org_tensorflow",
-    strip_prefix = "tensorflow-2.11.0",
-    sha256 = "e52cda3bae45f0ae0fccd4055e9fa29892b414f70e2df94df9a3a10319c75fff",
-    urls = ["https://github.com/tensorflow/tensorflow/archive/v2.11.0.zip"],
+    strip_prefix = "tensorflow-2.12.1",
+    sha256 = "63025cb60d00d9aa7a88807651305a38abb9bb144464e2419c03f13a089d19a6",
+    urls = ["https://github.com/tensorflow/tensorflow/archive/v2.12.1.zip"],
 )
 
 # This import (along with the org_tensorflow archive) is necessary to provide the devtoolset-9 toolchain
 load("@org_tensorflow//tensorflow/tools/toolchains/remote_config:configs.bzl", "initialize_rbe_configs")  # buildifier: disable=load-on-top
+load("@org_tensorflow//tensorflow/tools/toolchains:cpus/aarch64/aarch64_compiler_configure.bzl", "aarch64_compiler_configure")  # buildifier: disable=load-on-top
 
 initialize_rbe_configs()
+aarch64_compiler_configure()

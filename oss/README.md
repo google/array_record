@@ -2,21 +2,14 @@
 
 1. Update the version number in setup.py
 
-2. In workspace, run
+2. In the root folder, run
 
-```
-cd third_party
-./array_record/oss/runner.sh
-```
+  ```
+  ./oss/build_whl.sh
+  ```
+  to use the current `python3` version.  Otherwise, optionally set
+  ```
+  PYTHON_VERSION=3.9 ./oss/build_whl.sh
+  ```
 
-3. Wheels are in `/tmp/array_record/all_dist`.
-
-4. Upload to PyPI:
-
-```
-python3 -m pip install --upgrade twine
-python3 -m twine upload /tmp/array_record/all_dist/*-any.whl
-```
-
-Authenticate with Twine by following https://pypi.org/help/#apitoken and editing
-your `~/.pypirc`.
+3. Wheels are in `all_dist/`.
