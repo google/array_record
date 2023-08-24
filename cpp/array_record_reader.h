@@ -278,6 +278,9 @@ class ArrayRecordReaderBase : public riegeli::Object {
   // Returns the writer options for files produced after 2022-10-10.
   std::optional<std::string> WriterOptionsString() const;
 
+  uint64_t ChunkStartOffset(uint64_t chunk_idx) const;
+  uint64_t ChunkEndOffset(uint64_t chunk_idx) const;
+
  protected:
   explicit ArrayRecordReaderBase(Options options, ARThreadPool* pool);
   ~ArrayRecordReaderBase() override;
@@ -287,8 +290,6 @@ class ArrayRecordReaderBase : public riegeli::Object {
   ArrayRecordReaderBase& operator=(ArrayRecordReaderBase&& other) noexcept;
 
   void Initialize();
-  uint64_t ChunkStartOffset(uint64_t chunk_idx) const;
-  uint64_t ChunkEndOffset(uint64_t chunk_idx) const;
 
   virtual ThreadCompatibleSharedPtr<riegeli::Reader> get_backing_reader()
       const = 0;
