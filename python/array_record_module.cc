@@ -18,6 +18,7 @@ limitations under the License.
 #include <string>
 
 #include "absl/status/status.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "cpp/array_record_reader.h"
 #include "cpp/array_record_writer.h"
@@ -38,7 +39,8 @@ PYBIND11_MODULE(array_record_module, m) {
       array_record::ArrayRecordReader<std::unique_ptr<riegeli::Reader>>;
 
   py::class_<ArrayRecordWriter>(m, "ArrayRecordWriter")
-      .def(py::init([](const std::string& path, const std::string& options) {
+             .def(py::init([](const std::string& path, const std::string&
+             options) {
              auto status_or_option =
                  array_record::ArrayRecordWriterBase::Options::FromString(
                      options);
@@ -60,7 +62,39 @@ PYBIND11_MODULE(array_record_module, m) {
              return ArrayRecordWriter(std::move(file_writer),
                                       status_or_option.value());
            }),
-           py::arg("path"), py::arg("options") = "")
+           py::arg("path"), py::arg("options") = "",
+           R"(
+           ArrayRecordWriter for fast sequential or random access.
+
+           Args:
+               path: File path to write.
+               options: String with options for ArrayRecord. See syntax below.
+
+           options ::= option? ("," option?)*
+           option ::=
+             "group_size" ":" group_size |
+             "max_parallelism" ":" max_parallelism |
+             "saturation_delay_ms" : saturation_delay_ms |
+             "uncompressed" |
+             "brotli" (":" brotli_level)? |
+             "zstd" (":" zstd_level)? |
+             "snappy" |
+             "transpose" (":" ("true" | "false"))? |
+             "transpose_bucket_size" ":" transpose_bucket_size |
+             "window_log" : window_log |
+             "pad_to_block_boundary" (":" ("true" | "false"))?
+           group_size ::= positive integer which specifies number of records to be
+             grouped into a chunk before compression. (default 65536)
+           saturation_delay_ms ::= positive integer which specifies a delay in
+             milliseconds when the parallel writing queue is saturated.
+           max_parallelism ::= `auto` or positive integers which specifies
+             max number of concurrent writers allowed.
+           brotli_level ::= integer in the range [0..11] (default 6)
+           zstd_level ::= integer in the range [-131072..22] (default 3)
+           transpose_bucket_size ::= `auto` or a positive integer expressed as
+             real with optional suffix [BkKMGTPE]. (default 256)
+           window_log ::= "auto" or integer in the range [10..31]
+           )")
       .def("ok", &ArrayRecordWriter::ok)
       .def("close",
            [](ArrayRecordWriter& writer) {
@@ -80,8 +114,8 @@ PYBIND11_MODULE(array_record_module, m) {
       });
 
   py::class_<ArrayRecordReader>(m, "ArrayRecordReader")
-      .def(py::init([](const std::string& path, const std::string& options,
-                       const std::optional<int64_t> file_reader_buffer_size) {
+            .def(py::init([](const std::string& path, const std::string&
+            options, const std::optional<int64_t> file_reader_buffer_size) {
              auto status_or_option =
                  array_record::ArrayRecordReaderBase::Options::FromString(
                      options);
@@ -109,7 +143,8 @@ PYBIND11_MODULE(array_record_module, m) {
                                       array_record::ArrayRecordGlobalPool());
            }),
            py::arg("path"), py::arg("options") = "",
-           py::arg("file_reader_buffer_size") = std::nullopt, R"(
+           py::arg("file_reader_buffer_size") = std::nullopt,
+           R"(
            ArrayRecordReader for fast sequential or random access.
 
            Args:
