@@ -9,6 +9,12 @@ REQUIRED_PACKAGES = [
     'etils[epath]',
 ]
 
+BEAM_EXTRAS = [
+    'apache-beam[gcp]>=2.50.0',
+    'google-cloud-storage>=2.11.0',
+    'tensorflow>=2.14.0'
+]
+
 
 class BinaryDistribution(Distribution):
   """This class makes 'bdist_wheel' include an ABI tag on the wheel."""
@@ -19,7 +25,7 @@ class BinaryDistribution(Distribution):
 
 setup(
     name='array_record',
-    version='0.5.0',
+    version='0.5.1',
     description='A file format that achieves a new frontier of IO efficiency',
     author='ArrayRecord team',
     author_email='no-reply@google.com',
@@ -28,6 +34,9 @@ setup(
     package_data={'': ['*.so']},
     python_requires='>=3.9',
     install_requires=REQUIRED_PACKAGES,
+    extras_require={
+        'beam': BEAM_EXTRAS
+    },
     url='https://github.com/google/array_record',
     license='Apache-2.0',
     classifiers=[
