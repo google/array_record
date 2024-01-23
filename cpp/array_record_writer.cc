@@ -365,11 +365,18 @@ void ArrayRecordWriterBase::Initialize() {
 }
 
 void ArrayRecordWriterBase::Done() {
+  if (!ok()) {
+    return;
+  }
   auto writer = get_writer();
   if (chunk_encoder_->num_records() > 0) {
-    std::promise<absl::StatusOr<Chunk>> chunk_promise;
-    writer->CommitFutureChunk(chunk_promise.get_future());
-    chunk_promise.set_value(EncodeChunk(chunk_encoder_.get()));
+    auto chunk_promise =
+        std::make_shared<std::promise<absl::StatusOr<Chunk>>>();
+    if (!writer->CommitFutureChunk(chunk_promise->get_future())) {
+      Fail(writer->status());
+      return;
+    }
+    chunk_promise->set_value(EncodeChunk(chunk_encoder_.get()));
   }
   submit_chunk_callback_->WriteFooterAndPostscript(writer.get());
   if (!writer->Close()) {
@@ -418,13 +425,13 @@ bool ArrayRecordWriterBase::WriteRecordImpl(Record&& record) {
   if (chunk_encoder_->num_records() >= options_.group_size()) {
     auto writer = get_writer();
     auto encoder = std::move(chunk_encoder_);
+    chunk_encoder_ = CreateEncoder();
     auto chunk_promise =
         std::make_shared<std::promise<absl::StatusOr<Chunk>>>();
     if (!writer->CommitFutureChunk(chunk_promise->get_future())) {
       Fail(writer->status());
       return false;
     }
-    chunk_encoder_ = CreateEncoder();
     if (pool_ && options_.max_parallelism().value() > 1) {
       std::shared_ptr<riegeli::ChunkEncoder> shared_encoder =
           std::move(encoder);
