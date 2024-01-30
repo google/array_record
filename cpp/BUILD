@@ -114,6 +114,7 @@ cc_library(
         "@com_google_protobuf//:protobuf_lite",
         "@com_google_riegeli//riegeli/base:object",
         "@com_google_riegeli//riegeli/base:options_parser",
+        "@com_google_riegeli//riegeli/base:status",
         "@com_google_riegeli//riegeli/bytes:chain_writer",
         "@com_google_riegeli//riegeli/chunk_encoding:chunk",
         "@com_google_riegeli//riegeli/chunk_encoding:chunk_encoder",
