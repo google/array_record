@@ -43,6 +43,7 @@ limitations under the License.
 #include "cpp/thread_pool.h"
 #include "riegeli/base/object.h"
 #include "riegeli/base/options_parser.h"
+#include "riegeli/base/status.h"
 #include "riegeli/bytes/chain_writer.h"
 #include "riegeli/chunk_encoding/chunk.h"
 #include "riegeli/chunk_encoding/chunk_encoder.h"
@@ -365,10 +366,28 @@ void ArrayRecordWriterBase::Initialize() {
 }
 
 void ArrayRecordWriterBase::Done() {
+  if (!ok()) {
+    return;
+  }
   auto writer = get_writer();
+  if (writer == nullptr) {
+    Fail(absl::InternalError("writer should not be a nullptr."));
+    return;
+  }
+  if (!writer->ok()) {
+    Fail(riegeli::Annotate(writer->status(), "SequencedChunkWriter failure"));
+    return;
+  }
+  if (chunk_encoder_ == nullptr) {
+    Fail(absl::InternalError("chunk_encoder_ should not be a nullptr."));
+    return;
+  }
   if (chunk_encoder_->num_records() > 0) {
     std::promise<absl::StatusOr<Chunk>> chunk_promise;
-    writer->CommitFutureChunk(chunk_promise.get_future());
+    if (!writer->CommitFutureChunk(chunk_promise.get_future())) {
+      Fail(riegeli::Annotate(writer->status(), "Cannot commit future chunk"));
+      return;
+    }
     chunk_promise.set_value(EncodeChunk(chunk_encoder_.get()));
   }
   submit_chunk_callback_->WriteFooterAndPostscript(writer.get());
