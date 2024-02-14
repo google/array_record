@@ -139,8 +139,10 @@ class ArrayRecordModuleTest(absltest.TestCase):
     # Includes default options.
     self.assertEqual(
         reader.writer_options_string(),
-        "group_size:42,transpose:false,pad_to_block_boundary:false,zstd:3,"
-        "window_log:20,max_parallelism:1")
+        "group_size:42,groups_awaiting_flush:1024,"
+        "transpose:false,pad_to_block_boundary:false,zstd:3,"
+        "window_log:20,max_parallelism:1",
+    )
 
 if __name__ == "__main__":
   absltest.main()
