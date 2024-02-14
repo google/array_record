@@ -82,7 +82,16 @@ class ArrayRecordReaderTest
 
 TEST_P(ArrayRecordReaderTest, MoveTest) {
   std::string encoded;
-  auto writer_options = GetWriterOptions().set_group_size(2);
+  auto writer_options = GetWriterOptions();
+  int32_t group_size;
+  if (optimize_for_random_access()) {
+    group_size = 1;
+    writer_options.set_groups_awaiting_flush(256);
+  } else {
+    group_size = 3;
+    writer_options.set_groups_awaiting_flush(1);
+  }
+  writer_options.set_group_size(group_size);
   auto writer = ArrayRecordWriter(
       riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
 
@@ -113,7 +122,7 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
           })
           .ok());
 
-  EXPECT_EQ(reader_before_move.RecordGroupSize(), 2);
+  EXPECT_EQ(reader_before_move.RecordGroupSize(), group_size);
 
   ArrayRecordReader reader = std::move(reader_before_move);
   // Once a reader is moved, it is closed.
@@ -159,7 +168,7 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
   EXPECT_FALSE(reader.ReadRecord(&record_view));
   EXPECT_TRUE(reader.ok());
 
-  EXPECT_EQ(reader.RecordGroupSize(), 2);
+  EXPECT_EQ(reader.RecordGroupSize(), group_size);
 
   ASSERT_TRUE(reader.Close());
 }
@@ -172,11 +181,21 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
     size_t len = dist(bitgen);
     records[i] = MTRandomBytes(bitgen, len);
   }
+  auto writer_options = GetWriterOptions();
+  int32_t group_size;
+  if (optimize_for_random_access()) {
+    group_size = 1;
+    writer_options.set_groups_awaiting_flush(1024);
+  } else {
+    group_size = 1024;
+    writer_options.set_groups_awaiting_flush(1);
+  }
+  writer_options.set_group_size(group_size);
 
   std::string encoded;
   auto writer =
       ArrayRecordWriter(riegeli::Maker<riegeli::StringWriter>(&encoded),
-                        GetWriterOptions(), get_pool());
+                        writer_options, get_pool());
   for (auto i : Seq(kDatasetSize)) {
     EXPECT_TRUE(writer.WriteRecord(records[i]));
   }
@@ -193,27 +212,30 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
                         reader_opt, use_thread_pool() ? get_pool() : nullptr);
   ASSERT_TRUE(reader.status().ok());
   EXPECT_EQ(reader.NumRecords(), kDatasetSize);
-  uint64_t group_size =
-      std::min(ArrayRecordWriterBase::Options::kDefaultGroupSize, kDatasetSize);
   EXPECT_EQ(reader.RecordGroupSize(), group_size);
 
-  std::vector<bool> read_all_records(kDatasetSize, false);
+  std::vector<int32_t> read_all_records(kDatasetSize, 0);
   ASSERT_TRUE(reader
                   .ParallelReadRecords(
                       [&](uint64_t record_index,
                           absl::string_view result_view) -> absl::Status {
                         EXPECT_EQ(result_view, records[record_index]);
                         EXPECT_FALSE(read_all_records[record_index]);
-                        read_all_records[record_index] = true;
+                        read_all_records[record_index] = 1;
                         return absl::OkStatus();
                       })
                   .ok());
-  for (bool record_was_read : read_all_records) {
-    EXPECT_TRUE(record_was_read);
+  uint32_t records_read = 0;
+  for (auto record_was_read : read_all_records) {
+    if (record_was_read) {
+      records_read++;
+    }
   }
+  EXPECT_EQ(records_read, kDatasetSize);
+  EXPECT_TRUE(reader.SeekRecord(0));
 
   std::vector<uint64_t> indices = {0, 3, 5, 7, 101, 2000};
-  std::vector<bool> read_indexed_records(indices.size(), false);
+  std::vector<int32_t> read_indexed_records(indices.size(), 0);
   ASSERT_TRUE(reader
                   .ParallelReadRecordsWithIndices(
                       indices,
@@ -221,16 +243,16 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
                           absl::string_view result_view) -> absl::Status {
                         EXPECT_EQ(result_view, records[indices[indices_idx]]);
                         EXPECT_FALSE(read_indexed_records[indices_idx]);
-                        read_indexed_records[indices_idx] = true;
+                        read_indexed_records[indices_idx] = 1;
                         return absl::OkStatus();
                       })
                   .ok());
-  for (bool record_was_read : read_indexed_records) {
+  for (auto record_was_read : read_indexed_records) {
     EXPECT_TRUE(record_was_read);
   }
 
   uint64_t begin = 10, end = 101;
-  std::vector<bool> read_range_records(end - begin, false);
+  std::vector<int32_t> read_range_records(end - begin, 0);
   ASSERT_TRUE(reader
                   .ParallelReadRecordsInRange(
                       begin, end,
@@ -238,13 +260,17 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
                           absl::string_view result_view) -> absl::Status {
                         EXPECT_EQ(result_view, records[record_index]);
                         EXPECT_FALSE(read_range_records[record_index - begin]);
-                        read_range_records[record_index - begin] = true;
+                        read_range_records[record_index - begin] = 1;
                         return absl::OkStatus();
                       })
                   .ok());
-  for (bool record_was_read : read_range_records) {
-    EXPECT_TRUE(record_was_read);
+  records_read = 0;
+  for (auto record_was_read : read_range_records) {
+    if (record_was_read) {
+      records_read++;
+    }
   }
+  EXPECT_EQ(records_read, end - begin);
 
   // Test sequential read
   absl::string_view result_view;

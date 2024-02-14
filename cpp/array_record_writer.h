@@ -94,6 +94,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
     //   options ::= option? ("," option?)*
     //   option ::=
     //     "group_size" ":" group_size |
+    //     "groups_awaiting_flush" ":" groups_awaiting_flush |
     //     "max_parallelism" ":" max_parallelism |
     //     "saturation_delay_ms" : saturation_delay_ms |
     //     "uncompressed" |
@@ -105,7 +106,11 @@ class ArrayRecordWriterBase : public riegeli::Object {
     //     "window_log" : window_log |
     //     "pad_to_block_boundary" (":" ("true" | "false"))?
     //   group_size ::= positive integer which specifies number of records to be
-    //     grouped into a chunk before compression. (default 65536)
+    //     grouped into a chunk before compression. (default 1)
+    //   groups_awaiting_flush ::= positive integer which specify the number of
+    //     groups stored in a write buffer before sending to the storage IO.
+    //     This option reduce the total IOPs for small group_size. (default
+    //     1024)
     //   saturation_delay_ms ::= positive integer which specifies a delay in
     //     milliseconds when the parallel writing queue is saturated.
     //   max_parallelism ::= `auto` or positive integers which specifies
@@ -123,12 +128,22 @@ class ArrayRecordWriterBase : public riegeli::Object {
     //
     // The larger the value, the denser the file, at the cost of more expansive
     // random accessing.
-    static constexpr uint32_t kDefaultGroupSize = 65536;
+    // TODO(fchern) group_size=1 can trigger writer bugs..
+    static constexpr uint32_t kDefaultGroupSize = 1;
     Options& set_group_size(uint32_t group_size) {
       group_size_ = group_size;
       return *this;
     }
     uint32_t group_size() const { return group_size_; }
+
+    // Set the number of gruops pending in the write buffer before sending to
+    // the storage IO. This option reduces the total IOPs for small group size.
+    static constexpr uint32_t kDefaultGroupsAwaitingFlush = 1024;
+    Options& set_groups_awaiting_flush(uint32_t groups_awaiting_flush) {
+      groups_awaiting_flush_ = groups_awaiting_flush;
+      return *this;
+    }
+    uint32_t groups_awaiting_flush() const { return groups_awaiting_flush_; }
 
     // Specifies max number of concurrent chunk encoders allowed. Default to the
     // thread pool size.
@@ -290,6 +305,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
 
    private:
     int32_t group_size_ = kDefaultGroupSize;
+    int32_t groups_awaiting_flush_ = kDefaultGroupsAwaitingFlush;
     riegeli::CompressorOptions compressor_options_;
     std::optional<riegeli::RecordsMetadata> metadata_;
     bool pad_to_block_boundary_ = false;
