@@ -182,7 +182,6 @@ cc_test(
         ":common",
         ":sequenced_chunk_writer",
         ":thread_pool",
-        "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:cord",
         "@com_google_googletest//:gtest_main",
