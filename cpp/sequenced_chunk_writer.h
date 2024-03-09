@@ -24,6 +24,7 @@ limitations under the License.
 #ifndef ARRAY_RECORD_CPP_SEQUENCED_CHUNK_WRITER_H_
 #define ARRAY_RECORD_CPP_SEQUENCED_CHUNK_WRITER_H_
 
+#include <cstdint>
 #include <functional>
 #include <future>  // NOLINT(build/c++11)
 #include <optional>
@@ -143,6 +144,11 @@ class SequencedChunkWriterBase : public riegeli::Object {
     return pad_to_block_boundary_;
   }
 
+  void set_chunks_awaiting_flush(uint32_t chunks_awaiting_flush) {
+    absl::MutexLock l(&mu_);
+    chunks_awaiting_flush_ = chunks_awaiting_flush;
+  }
+
   // Setup a callback for each committed chunk. See CommitChunkCallback
   // comments for details.
   void set_submit_chunk_callback(SubmitChunkCallback* callback) {
@@ -173,6 +179,8 @@ class SequencedChunkWriterBase : public riegeli::Object {
 
   // Records the sequence number of submitted chunks.
   uint64_t submitted_chunks_ ABSL_GUARDED_BY(mu_) = 0;
+
+  uint64_t chunks_awaiting_flush_ ABSL_GUARDED_BY(mu_) = 0;
 
   // Queue for storing the future chunks.
   std::queue<std::future<absl::StatusOr<riegeli::Chunk>>> queue_
