@@ -7,7 +7,7 @@
 set -e -x
 
 # Clean previous images.
-for PYTHON_VERSION in 3.9 3.10 3.11
+for PYTHON_VERSION in 3.9 3.10 3.11 3.12
 do
   docker rmi -f array_record:${PYTHON_VERSION}
 done
@@ -22,7 +22,7 @@ elif [ "$ARCH" == "aarch64" ]; then
 fi
 
 # Build wheel for each Python version.
-for PYTHON_VERSION in 3.9 3.10 3.11
+for PYTHON_VERSION in 3.9 3.10 3.11 3.12
 do
   DOCKER_BUILDKIT=1 docker build --progress=plain --no-cache \
     --build-arg PYTHON_VERSION=${PYTHON_VERSION} \
