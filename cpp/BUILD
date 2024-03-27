@@ -169,6 +169,7 @@ cc_library(
         "@com_google_riegeli//riegeli/base:options_parser",
         "@com_google_riegeli//riegeli/base:status",
         "@com_google_riegeli//riegeli/bytes:reader",
+        "@com_google_riegeli//riegeli/bytes:wrapped_reader",
         "@com_google_riegeli//riegeli/chunk_encoding:chunk_decoder",
         "@com_google_riegeli//riegeli/records:chunk_reader",
         "@com_google_riegeli//riegeli/records:record_position",
