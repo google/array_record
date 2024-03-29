@@ -39,7 +39,7 @@ function build_and_test_array_record() {
       --env AUDITWHEEL_PLATFORM=${AUDITWHEEL_PLATFORM} \
       -v $SOURCE_DIR:/tmp/array_record \
       --name array_record array_record:${PYTHON_VERSION} \
-      bash ${SOURCE_DIR}/oss/build_whl.sh
+      bash oss/build_whl.sh
   done
 
   ls ${SOURCE_DIR}/all_dist/*.whl
