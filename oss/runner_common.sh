@@ -7,8 +7,7 @@ function build_and_test_array_record() {
 
   # Automatically decide which platform to build for by checking on which
   # platform this runs.
-  ARCH=$(uname -m)
-  AUDITWHEEL_PLATFORM="manylinux2014_${ARCH}"
+  AUDITWHEEL_PLATFORM="manylinux2014_$(uname -m)"
 
   # Using a previous version of Blaze to avoid:
   # https://github.com/bazelbuild/bazel/issues/8622
@@ -26,7 +25,6 @@ function build_and_test_array_record() {
     docker rm -f array_record
 
     DOCKER_BUILDKIT=1 docker build --progress=plain --no-cache \
-      --build-arg ARCH=${ARCH} \
       --build-arg AUDITWHEEL_PLATFORM=${AUDITWHEEL_PLATFORM} \
       --build-arg PYTHON_VERSION=${PYTHON_VERSION} \
       --build-arg PYTHON_BIN=${PYTHON_BIN} \
