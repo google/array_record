@@ -7,5 +7,4 @@ write, and random access by record index.
 ArrayRecord builds on top of Riegeli and supports the same compression
 algorithms.
 
-This is not an officially supported Google product.
 
