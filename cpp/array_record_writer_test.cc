@@ -208,6 +208,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     auto option = ArrayRecordWriterBase::Options::FromString("").value();
     EXPECT_EQ(option.group_size(),
               ArrayRecordWriterBase::Options::kDefaultGroupSize);
+    EXPECT_EQ(option.groups_awaiting_flush(),
+              ArrayRecordWriterBase::Options::kDefaultGroupsAwaitingFlush);
     EXPECT_FALSE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
@@ -217,7 +219,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_FALSE(option.pad_to_block_boundary());
 
     EXPECT_EQ(option.ToString(),
-              "group_size:65536,"
+              "group_size:1,"
+              "groups_awaiting_flush:1024,"
               "transpose:false,"
               "pad_to_block_boundary:false,"
               "zstd:3,"
@@ -229,6 +232,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     auto option = ArrayRecordWriterBase::Options::FromString("default").value();
     EXPECT_EQ(option.group_size(),
               ArrayRecordWriterBase::Options::kDefaultGroupSize);
+    EXPECT_EQ(option.groups_awaiting_flush(),
+              ArrayRecordWriterBase::Options::kDefaultGroupsAwaitingFlush);
     EXPECT_FALSE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
@@ -238,7 +243,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_FALSE(option.pad_to_block_boundary());
 
     EXPECT_EQ(option.ToString(),
-              "group_size:65536,"
+              "group_size:1,"
+              "groups_awaiting_flush:1024,"
               "transpose:false,"
               "pad_to_block_boundary:false,"
               "zstd:3,"
@@ -247,10 +253,12 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
         ArrayRecordWriterBase::Options::FromString(option.ToString()).ok());
   }
   {
-    auto option = ArrayRecordWriterBase::Options::FromString(
-                      "group_size:32,transpose,window_log:20")
-                      .value();
+    auto option =
+        ArrayRecordWriterBase::Options::FromString(
+            "group_size:32,groups_awaiting_flush:256,transpose,window_log:20")
+            .value();
     EXPECT_EQ(option.group_size(), 32);
+    EXPECT_EQ(option.groups_awaiting_flush(), 256);
     EXPECT_TRUE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
@@ -260,6 +268,7 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
 
     EXPECT_EQ(option.ToString(),
               "group_size:32,"
+              "groups_awaiting_flush:256,"
               "transpose:true,"
               "pad_to_block_boundary:false,"
               "transpose_bucket_size:256,"
@@ -273,6 +282,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
                       "brotli:6,group_size:32,transpose,window_log:25")
                       .value();
     EXPECT_EQ(option.group_size(), 32);
+    EXPECT_EQ(option.groups_awaiting_flush(),
+              ArrayRecordWriterBase::Options::kDefaultGroupsAwaitingFlush);
     EXPECT_TRUE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
@@ -282,6 +293,7 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
 
     EXPECT_EQ(option.ToString(),
               "group_size:32,"
+              "groups_awaiting_flush:1024,"
               "transpose:true,"
               "pad_to_block_boundary:false,"
               "transpose_bucket_size:256,"
@@ -295,6 +307,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
                       "group_size:32,transpose,zstd:5")
                       .value();
     EXPECT_EQ(option.group_size(), 32);
+    EXPECT_EQ(option.groups_awaiting_flush(),
+              ArrayRecordWriterBase::Options::kDefaultGroupsAwaitingFlush);
     EXPECT_TRUE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
@@ -305,6 +319,7 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
 
     EXPECT_EQ(option.ToString(),
               "group_size:32,"
+              "groups_awaiting_flush:1024,"
               "transpose:true,"
               "pad_to_block_boundary:false,"
               "transpose_bucket_size:256,"
@@ -319,6 +334,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
                       .value();
     EXPECT_EQ(option.group_size(),
               ArrayRecordWriterBase::Options::kDefaultGroupSize);
+    EXPECT_EQ(option.groups_awaiting_flush(),
+              ArrayRecordWriterBase::Options::kDefaultGroupsAwaitingFlush);
     EXPECT_FALSE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
@@ -326,7 +343,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_TRUE(option.pad_to_block_boundary());
 
     EXPECT_EQ(option.ToString(),
-              "group_size:65536,"
+              "group_size:1,"
+              "groups_awaiting_flush:1024,"
               "transpose:false,"
               "pad_to_block_boundary:true,"
               "uncompressed");
@@ -339,6 +357,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
                       .value();
     EXPECT_EQ(option.group_size(),
               ArrayRecordWriterBase::Options::kDefaultGroupSize);
+    EXPECT_EQ(option.groups_awaiting_flush(),
+              ArrayRecordWriterBase::Options::kDefaultGroupsAwaitingFlush);
     EXPECT_FALSE(option.transpose());
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.compressor_options().compression_type(),
@@ -346,7 +366,8 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_TRUE(option.pad_to_block_boundary());
 
     EXPECT_EQ(option.ToString(),
-              "group_size:65536,"
+              "group_size:1,"
+              "groups_awaiting_flush:1024,"
               "transpose:false,"
               "pad_to_block_boundary:true,"
               "snappy");

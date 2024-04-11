@@ -103,11 +103,14 @@ bool SequencedChunkWriterBase::SubmitFutureChunks(bool block) {
         continue;
       }
     }
-    if (!chunk_writer->Flush(riegeli::FlushType::kFromObject)) {
-      Fail(riegeli::Annotate(
-          chunk_writer->status(),
-          absl::StrFormat("Could not flush chunk: %d", submitted_chunks_)));
-      continue;
+    if (chunks_awaiting_flush_ == 0 ||
+        submitted_chunks_ % chunks_awaiting_flush_ == 0) {
+      if (!chunk_writer->Flush(riegeli::FlushType::kFromObject)) {
+        Fail(riegeli::Annotate(
+            chunk_writer->status(),
+            absl::StrFormat("Could not flush chunk: %d", submitted_chunks_)));
+        continue;
+      }
     }
     if (callback_) {
       (*callback_)(submitted_chunks_, chunk_offset, decoded_data_size,
@@ -136,6 +139,11 @@ void SequencedChunkWriterBase::Initialize() {
 void SequencedChunkWriterBase::Done() {
   SubmitFutureChunks(true);
   auto* chunk_writer = get_writer();
+  if (!chunk_writer->Flush(riegeli::FlushType::kFromObject)) {
+    Fail(riegeli::Annotate(chunk_writer->status(),
+                           "Could not flush before close."));
+    return;
+  }
   if (!chunk_writer->Close()) {
     Fail(riegeli::Annotate(chunk_writer->status(),
                            "Failed to close chunk_writer"));
