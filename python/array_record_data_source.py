@@ -40,7 +40,7 @@ import os
 import pathlib
 import re
 import typing
-from typing import Any, Callable, List, Mapping, Protocol, Sequence, SupportsIndex, Tuple, TypeVar, Union
+from typing import Any, Callable, Iterator, List, Mapping, Protocol, Sequence, SupportsIndex, Tuple, TypeVar, Union
 
 from absl import flags
 from absl import logging
@@ -283,6 +283,10 @@ class ArrayRecordDataSource:
 
   def __len__(self) -> int:
     return self._num_records
+
+  def __iter__(self) -> Iterator[bytes]:
+    for index in range(self._num_records):
+      yield self[index]
 
   def _reader_idx_and_position(
       self, record_key: SupportsIndex

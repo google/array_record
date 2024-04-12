@@ -91,6 +91,15 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ])
     self.assertLen(ar, 10)
 
+  def test_array_record_data_source_iter(self):
+    ar = array_record_data_source.ArrayRecordDataSource([
+        self.testdata_dir / "digits.array_record-00000-of-00002",
+        self.testdata_dir / "digits.array_record-00001-of-00002",
+    ])
+    digits = [b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9"]
+    for actual, expected in zip(ar, digits):
+      self.assertEqual(actual, expected)
+
   def test_array_record_data_source_single_path(self):
     indices_to_read = [0, 1, 2, 3, 4]
     expected_data = [b"0", b"1", b"2", b"3", b"4"]
