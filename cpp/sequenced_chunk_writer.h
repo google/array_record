@@ -110,6 +110,9 @@ class SequencedChunkWriterBase : public riegeli::Object {
   // thread-safe, and we recommend users invoke it with `block=false` in each
   // thread to reduce the temporal memory usage.
   //
+  // If ok() is false before or during this operation, queue elements continue
+  // to be extracted, but are immediately discarded.
+  //
   // Example 1: single thread usage
   //
   //     std::promise<absl::StatusOr<riegeli::Chunk>> chunk_promise;
@@ -167,6 +170,12 @@ class SequencedChunkWriterBase : public riegeli::Object {
   void Done() override;
 
  private:
+  // Attempts to submit the first chunk from the queue. Expects that the lock is
+  // already held. Even if ok() is false on entry already, the queue element is
+  // removed (and discarded).
+  void TrySubmitFirstFutureChunk(riegeli::ChunkWriter* chunk_writer)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+
   mutable absl::Mutex mu_;
   bool pad_to_block_boundary_ ABSL_GUARDED_BY(mu_) = false;
   SubmitChunkCallback* callback_ ABSL_GUARDED_BY(mu_) = nullptr;
