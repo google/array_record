@@ -15,25 +15,26 @@ limitations under the License.
 
 #include "cpp/array_record_writer.h"
 
-#include <memory>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <random>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/strings/string_view.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
 #include "cpp/test_utils.h"
 #include "cpp/thread_pool.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/bytes/string_reader.h"
 #include "riegeli/bytes/string_writer.h"
 #include "riegeli/chunk_encoding/constants.h"
 #include "riegeli/records/record_reader.h"
-#include "riegeli/records/record_writer.h"
 #include "riegeli/records/records_metadata.pb.h"
 
 namespace array_record {
@@ -84,8 +85,8 @@ TEST_P(ArrayRecordWriterTest, MoveTest) {
   }
   auto options = GetOptions();
   options.set_group_size(2);
-  auto writer = ArrayRecordWriter<riegeli::StringWriter<>>(
-      std::forward_as_tuple(&encoded), options, pool);
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), options, pool);
 
   // Empty string should not crash the writer/reader.
   std::vector<std::string> test_str{"aaa", "", "ccc", "dd", "e"};
@@ -106,8 +107,8 @@ TEST_P(ArrayRecordWriterTest, MoveTest) {
   EXPECT_TRUE(moved_writer.WriteRecord(test_str[4]));
   ASSERT_TRUE(moved_writer.Close());
 
-  auto reader = riegeli::RecordReader<riegeli::StringReader<>>(
-      std::forward_as_tuple(encoded));
+  auto reader =
+      riegeli::RecordReader(riegeli::Maker<riegeli::StringReader>(encoded));
   for (const auto& expected : test_str) {
     std::string result;
     reader.ReadRecord(result);
@@ -135,16 +136,16 @@ TEST_P(ArrayRecordWriterTest, RandomDatasetTest) {
   auto options = GetOptions();
   options.set_group_size(kGroupSize);
 
-  auto writer = ArrayRecordWriter<riegeli::StringWriter<>>(
-      std::forward_as_tuple(&encoded), options, pool);
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), options, pool);
 
   for (auto i : Seq(num_records)) {
     EXPECT_TRUE(writer.WriteRecord(records[i]));
   }
   ASSERT_TRUE(writer.Close());
 
-  auto reader = riegeli::RecordReader<riegeli::StringReader<>>(
-      std::forward_as_tuple(encoded));
+  auto reader =
+      riegeli::RecordReader(riegeli::Maker<riegeli::StringReader>(encoded));
 
   // Verify metadata
   ASSERT_TRUE(reader.CheckFileFormat());

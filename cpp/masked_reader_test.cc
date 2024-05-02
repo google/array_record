@@ -16,9 +16,7 @@ limitations under the License.
 #include "cpp/masked_reader.h"
 
 #include <string>
-#include <tuple>
 
-#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "riegeli/bytes/string_reader.h"
 
@@ -29,7 +27,7 @@ using riegeli::StringReader;
 
 TEST(MaskedReaderTest, SanityTest) {
   auto data = std::string("0123456789abcdef");
-  auto base_reader = StringReader<>(std::forward_as_tuple(data));
+  auto base_reader = StringReader(data);
   // 56789abc
   auto masked_reader1 = MaskedReader(base_reader.NewReader(5), 8);
   // Matches where we offset the reader.

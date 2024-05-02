@@ -24,11 +24,9 @@ limitations under the License.
 #ifndef ARRAY_RECORD_CPP_SEQUENCED_CHUNK_WRITER_H_
 #define ARRAY_RECORD_CPP_SEQUENCED_CHUNK_WRITER_H_
 
-#include <functional>
+#include <cstdint>
 #include <future>  // NOLINT(build/c++11)
-#include <optional>
 #include <queue>
-#include <type_traits>
 #include <utility>
 
 #include "absl/base/thread_annotations.h"
@@ -36,6 +34,7 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "cpp/common.h"
+#include "riegeli/base/initializer.h"
 #include "riegeli/base/object.h"
 #include "riegeli/bytes/writer.h"
 #include "riegeli/chunk_encoding/chunk.h"
@@ -203,7 +202,7 @@ class SequencedChunkWriterBase : public riegeli::Object {
 //   // Step 1: open the writer with file backend.
 //   File* file = file::OpenOrDie(...);
 //   auto writer = std::make_shared<SequencedChunkWriter<riegeli::FileWriter<>>(
-//     std::make_tuple(file));
+//       riegeli::Maker(filename_or_file));
 //
 //   // Step 2: create a chunk encoding task.
 //   std::packaged_task<absl::StatusOr<riegeli::Chunk>()> encoding_task(
@@ -246,35 +245,28 @@ class SequencedChunkWriterBase : public riegeli::Object {
 // output to a string, user simply write:
 //
 //   std::string dest;
-//   auto writes_to_string =
-//     SequencedChunkWriter<riegeli::StringWriter<>>(std::make_tuple(&dest));
+//   SequencedChunkWriter writes_to_string(
+//       riegeli::Maker<riegeli::StringWriter>(&dest));
 //
 // Similarly, user can write the output to a cord or to a file.
 //
 //   absl::Cord cord;
-//   auto writes_to_cord =
-//     SequencedChunkWriter<riegeli::CordWriter<>>(std::make_tuple(&cord));
+//   SequencedChunkWriter writes_to_cord(
+//       riegeli::Maker<riegeli::CordWriter>(&cord));
 //
-//   File* file = ...;
-//   auto writes_to_file =
-//     SequencedChunkWriter<riegeli::FileWriter<>>(std::make_tuple(file));
+//   SequencedChunkWriter writes_to_file(
+//       riegeli::Maker<riegeli::FileWriter>(filename_or_file));
 //
 // User may also use std::make_shared<...> or std::make_unique to construct the
 // instance, as shown in the previous example.
-template <typename Dest>
+template <typename Dest = riegeli::Writer*>
 class SequencedChunkWriter : public SequencedChunkWriterBase {
  public:
   DECLARE_IMMOBILE_CLASS(SequencedChunkWriter);
 
-  // Ctor by taking the ownership of the other riegeli writer.
-  explicit SequencedChunkWriter(Dest&& dest) : dest_(std::move(dest)) {
-    Initialize();
-  }
-
-  // Ctor by forwarding arguments as tuple to the underlying riegeli writer.
-  template <typename... DestArgs>
-  explicit SequencedChunkWriter(std::tuple<DestArgs...> dest_args)
-      : dest_(std::move(dest_args)) {
+  // Will write to the `Writer` provided by `dest`.
+  explicit SequencedChunkWriter(riegeli::Initializer<Dest> dest)
+      : dest_(std::move(dest)) {
     Initialize();
   }
 
@@ -284,6 +276,10 @@ class SequencedChunkWriter : public SequencedChunkWriterBase {
  private:
   riegeli::DefaultChunkWriter<Dest> dest_;
 };
+
+template <typename Dest>
+explicit SequencedChunkWriter(Dest&& dest)
+    -> SequencedChunkWriter<riegeli::InitializerTargetT<Dest>>;
 
 }  // namespace array_record
 

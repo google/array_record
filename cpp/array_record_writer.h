@@ -58,21 +58,29 @@ limitations under the License.
 #define ARRAY_RECORD_CPP_ARRAY_RECORD_WRITER_H_
 
 #include <algorithm>
-#include <functional>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
-#include <queue>
+#include <string>
+#include <tuple>
 #include <utility>
 
-#include "google/protobuf/message_lite.h"
+#include "absl/base/attributes.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/sequenced_chunk_writer.h"
 #include "cpp/thread_pool.h"
+#include "riegeli/base/initializer.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/base/object.h"
-#include "riegeli/chunk_encoding/chunk.h"
+#include "riegeli/base/shared_ptr.h"
+#include "riegeli/bytes/writer.h"
 #include "riegeli/chunk_encoding/chunk_encoder.h"
 #include "riegeli/chunk_encoding/compressor_options.h"
+#include "riegeli/chunk_encoding/constants.h"
 #include "riegeli/records/records_metadata.pb.h"
 
 namespace array_record {
@@ -222,7 +230,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
     // subsequent block offsets if some chunks were corrupted.
     //
     // It is not as useful in ArrayRecordReader because we get all the chunk
-    // offsts from the footer.
+    // offsets from the footer.
     //
     // Default: `false`
     Options& set_pad_to_block_boundary(bool pad_to_block_boundary) {
@@ -312,7 +320,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
   ArrayRecordWriterBase(ArrayRecordWriterBase&& other) noexcept;
   ArrayRecordWriterBase& operator=(ArrayRecordWriterBase&& other) noexcept;
 
-  virtual std::shared_ptr<SequencedChunkWriterBase> get_writer() = 0;
+  virtual riegeli::SharedPtr<SequencedChunkWriterBase> get_writer() = 0;
 
   // Initializes and validates the underlying writer states.
   void Initialize();
@@ -339,21 +347,17 @@ class ArrayRecordWriterBase : public riegeli::Object {
 // output to a string, user simply write:
 //
 //   std::string dest;
-//   auto writes_to_string =
-//     ArrayRecordWriter<riegeli::StringWriter<>>(std::make_tuple(&dest));
+//   ArrayRecordWriter writes_to_string(
+//       riegeli::Maker<riegeli::StringWriter>(&dest));
 //
 // Similarly, user can write the output to a cord or to a file.
 //
 //   absl::Cord cord;
-//   auto writes_to_cord =
-//     ArrayRecordWriter<riegeli::CordWriter<>>(std::make_tuple(&cord));
+//   ArrayRecordWriter writes_to_cord(
+//       riegeli::Maker<riegeli::CordWriter>(&cord));
 //
-//   File* file = ...;
-//   auto writes_to_file =
-//     ArrayRecordWriter<riegeli::FileWriter<>>(std::make_tuple(file));
-//
-// User may also use std::make_shared<...> or std::make_unique to construct the
-// instance, as shown in the previous example.
+//   ArrayRecordWriter writes_to_file(
+//       riegeli::Maker<riegeli::FileWriter>(filename_or_file));
 //
 // It is necessary to call `Close()` at the end of a successful writing session,
 // and it is recommended to call `Close()` at the end of a successful reading
@@ -364,41 +368,56 @@ class ArrayRecordWriterBase : public riegeli::Object {
 // Error handling example:
 //
 //   // Just like RET_CHECK and RETURN_OR_ERROR
-//   if(!writer.WriteRecord(...)) return writer.status();
+//   if (!writer.WriteRecord(...)) return writer.status();
 //   // writer doesn't close on destruction, user must call `Close()` and check
 //   // the status.
-//   if(!writer.Close()) return writer.status();
+//   if (!writer.Close()) return writer.status();
 //
-template <typename Dest>
+template <typename Dest = riegeli::Writer*>
 class ArrayRecordWriter : public ArrayRecordWriterBase {
  public:
   DECLARE_MOVE_ONLY_CLASS(ArrayRecordWriter);
 
-  // Ctor by taking the ownership of the other riegeli writer.
-  explicit ArrayRecordWriter(Dest&& dest, Options options = Options(),
-                             ARThreadPool* pool = nullptr)
-      : ArrayRecordWriterBase(std::move(options), pool),
-        dest_(std::make_shared<SequencedChunkWriter<Dest>>(std::move(dest))) {
-    Initialize();
-  }
-
-  // Ctor by forwarding arguments as tuple to the underlying riegeli writer.
-  template <typename... DestArgs>
-  explicit ArrayRecordWriter(std::tuple<DestArgs...> dest_args,
+  // Will write to the `Writer` provided by `dest`.
+  explicit ArrayRecordWriter(riegeli::Initializer<Dest> dest,
                              Options options = Options(),
                              ARThreadPool* pool = nullptr)
       : ArrayRecordWriterBase(std::move(options), pool),
-        dest_(std::make_shared<SequencedChunkWriter<Dest>>(
-            std::move(dest_args))) {
+        dest_(riegeli::Maker<SequencedChunkWriter>(std::move(dest))) {
     Initialize();
   }
 
+  template <typename... DestArgs>
+  ABSL_DEPRECATED(
+      "Use riegeli::Maker<Dest>(dest_args...) instead of "
+      "std::forward_as_tuple(dest_args...), if possible using CTAD to deduce "
+      "the template argument of ArrayRecordWriter as Dest")
+  explicit ArrayRecordWriter(std::tuple<DestArgs...> dest_args,
+                             Options options = Options(),
+                             ARThreadPool* pool = nullptr)
+      : ArrayRecordWriter(
+            std::apply(
+                [](DestArgs&&... dest_args) -> riegeli::MakerType<DestArgs...> {
+                  return {std::forward<DestArgs>(dest_args)...};
+                },
+                std::move(dest_args)),
+            options, pool) {}
+
  protected:
-  std::shared_ptr<SequencedChunkWriterBase> get_writer() final { return dest_; }
+  riegeli::SharedPtr<SequencedChunkWriterBase> get_writer() final {
+    return dest_;
+  }
 
  private:
-  std::shared_ptr<SequencedChunkWriter<Dest>> dest_;
+  riegeli::SharedPtr<SequencedChunkWriter<Dest>> dest_;
 };
+
+template <typename Dest>
+explicit ArrayRecordWriter(
+    Dest&& dest,
+    ArrayRecordWriterBase::Options options = ArrayRecordWriterBase::Options(),
+    ARThreadPool* pool = nullptr)
+    -> ArrayRecordWriter<riegeli::InitializerTargetT<Dest>>;
 
 }  // namespace array_record
 

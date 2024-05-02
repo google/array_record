@@ -15,14 +15,16 @@ limitations under the License.
 
 #include "cpp/array_record_reader.h"
 
-#include <memory>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <random>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
@@ -32,10 +34,9 @@ limitations under the License.
 #include "cpp/layout.pb.h"
 #include "cpp/test_utils.h"
 #include "cpp/thread_pool.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/bytes/string_reader.h"
 #include "riegeli/bytes/string_writer.h"
-#include "riegeli/chunk_encoding/chunk_decoder.h"
-#include "riegeli/records/chunk_reader.h"
 
 constexpr uint32_t kDatasetSize = 10050;
 
@@ -82,8 +83,8 @@ class ArrayRecordReaderTest
 TEST_P(ArrayRecordReaderTest, MoveTest) {
   std::string encoded;
   auto writer_options = GetWriterOptions().set_group_size(2);
-  auto writer = ArrayRecordWriter<riegeli::StringWriter<>>(
-      std::forward_as_tuple(&encoded), writer_options, nullptr);
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
 
   // Empty string should not crash the writer or the reader.
   std::vector<std::string> test_str{"aaa", "", "ccc", "dd", "e"};
@@ -98,9 +99,9 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
     reader_opt.set_readahead_buffer_size(0);
   }
 
-  auto reader_before_move = ArrayRecordReader<riegeli::StringReader<>>(
-      std::forward_as_tuple(encoded), reader_opt,
-      use_thread_pool() ? get_pool() : nullptr);
+  auto reader_before_move =
+      ArrayRecordReader(riegeli::Maker<riegeli::StringReader>(encoded),
+                        reader_opt, use_thread_pool() ? get_pool() : nullptr);
   ASSERT_TRUE(reader_before_move.status().ok());
 
   ASSERT_TRUE(
@@ -114,8 +115,7 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
 
   EXPECT_EQ(reader_before_move.RecordGroupSize(), 2);
 
-  ArrayRecordReader<riegeli::StringReader<>> reader =
-      std::move(reader_before_move);
+  ArrayRecordReader reader = std::move(reader_before_move);
   // Once a reader is moved, it is closed.
   ASSERT_FALSE(reader_before_move.is_open());  // NOLINT
 
@@ -174,8 +174,9 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
   }
 
   std::string encoded;
-  auto writer = ArrayRecordWriter<riegeli::StringWriter<>>(
-      std::forward_as_tuple(&encoded), GetWriterOptions(), get_pool());
+  auto writer =
+      ArrayRecordWriter(riegeli::Maker<riegeli::StringWriter>(&encoded),
+                        GetWriterOptions(), get_pool());
   for (auto i : Seq(kDatasetSize)) {
     EXPECT_TRUE(writer.WriteRecord(records[i]));
   }
@@ -187,9 +188,9 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
     reader_opt.set_readahead_buffer_size(0);
   }
 
-  auto reader = ArrayRecordReader<riegeli::StringReader<>>(
-      std::forward_as_tuple(encoded), reader_opt,
-      use_thread_pool() ? get_pool() : nullptr);
+  auto reader =
+      ArrayRecordReader(riegeli::Maker<riegeli::StringReader>(encoded),
+                        reader_opt, use_thread_pool() ? get_pool() : nullptr);
   ASSERT_TRUE(reader.status().ok());
   EXPECT_EQ(reader.NumRecords(), kDatasetSize);
   uint64_t group_size =

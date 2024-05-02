@@ -33,21 +33,25 @@ limitations under the License.
 #define ARRAY_RECORD_CPP_ARRAY_RECORD_READER_H_
 
 #include <cstdint>
-#include <functional>
-#include <future>  // NOLINT(build/c++11)
 #include <memory>
 #include <optional>
-#include <queue>
+#include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
-#include "google/protobuf/message_lite.h"
+#include "absl/base/attributes.h"
 #include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "cpp/common.h"
-#include "cpp/thread_compatible_shared_ptr.h"
+#include "cpp/shareable_dependency.h"
 #include "cpp/thread_pool.h"
+#include "third_party/protobuf/message_lite.h"
+#include "riegeli/base/initializer.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/base/object.h"
 #include "riegeli/bytes/reader.h"
 
@@ -291,8 +295,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
 
   void Initialize();
 
-  virtual ThreadCompatibleSharedPtr<riegeli::Reader> get_backing_reader()
-      const = 0;
+  virtual DependencyShare<riegeli::Reader*> get_backing_reader() const = 0;
 
  private:
   bool ReadAheadFromBuffer(uint64_t buffer_idx);
@@ -308,18 +311,17 @@ class ArrayRecordReaderBase : public riegeli::Object {
 // data from a string, user simply write:
 //
 //   std::string src = ...;
-//   auto reads_from_string =
-//     ArrayRecordReader<riegeli::StringReader<>>(std::forward_as_tuple(src));
+//   ArrayRecordReader reads_from_string(
+//       riegeli::Maker<riegeli::StringReader>(src));
 //
 // Similarly, user can read the input from a cord or from a file.
 //
 //   absl::Cord cord = ...;
-//   auto reads_from_cord =
-//     ArrayRecordReader<riegeli::CordReader<>>(std::forward_as_tuple(cord));
+//   ArrayRecordReader reads_from_cord(
+//       riegeli::Maker<riegeli::CordReader>(&cord));
 //
-//   File* file = ...;
-//   auto writes_to_file =
-//     ArrayRecordReader<riegeli::FileReader<>>(std::forward_as_tuple(file));
+//   ArrayRecordReader reads_from_file(
+//       riegeli::Maker<riegeli::FileReader>(filename_or_file));
 //
 // It is necessary to call `Close()` at the end of a successful reading session.
 // It is not needed to call `Close()` on early returns, assuming that contents
@@ -329,23 +331,28 @@ class ArrayRecordReaderBase : public riegeli::Object {
 // Error handling example:
 //
 //   // Similar to RET_CHECK and RETURN_OR_ERROR
-//   if(!reader.ReadRecord(...)) return reader.status();
+//   if (!reader.ReadRecord(...)) return reader.status();
 //   // Must close after use.
-//   if(!reader.Close()) return reader.status();
+//   if (!reader.Close()) return reader.status();
 //
 // ArrayRecordReader is thread compatible, not thread-safe.
-template <typename Src>
+template <typename Src = riegeli::Reader*>
 class ArrayRecordReader : public ArrayRecordReaderBase {
  public:
   DECLARE_MOVE_ONLY_CLASS(ArrayRecordReader);
 
-  // Constructor that takes the ownership of the other riegeli reader.
-  explicit ArrayRecordReader(Src&& src, Options options = Options(),
+  // Will read from the `Reader` provided by `src`.
+  explicit ArrayRecordReader(riegeli::Initializer<Src> src,
+                             Options options = Options(),
                              ARThreadPool* pool = nullptr)
       : ArrayRecordReaderBase(std::move(options), pool),
-        main_reader_(ThreadCompatibleSharedPtr<riegeli::Reader>::Create(
-            std::move(src))) {
-    if (!main_reader_->SupportsNewReader()) {
+        main_reader_(std::move(src)) {
+    auto& unique = main_reader_.WaitUntilUnique();
+    if (!unique->ok()) {
+      Fail(unique->status());
+      return;
+    }
+    if (!unique->SupportsNewReader()) {
       Fail(InvalidArgumentError(
           "ArrayRecordReader only work on inputs with random access support."));
       return;
@@ -353,43 +360,44 @@ class ArrayRecordReader : public ArrayRecordReaderBase {
     Initialize();
   }
 
-  // Constructor that forwards the argument to the underlying riegeli reader and
-  // owns the reader internally till it closes.
   template <typename... SrcArgs>
+  ABSL_DEPRECATED(
+      "Use riegeli::Maker<Src>(src_args...) instead of "
+      "std::forward_as_tuple(src_args...), if possible using CTAD to deduce "
+      "the template argument of ArrayRecordReader as Src")
   explicit ArrayRecordReader(std::tuple<SrcArgs...> src_args,
                              Options options = Options(),
                              ARThreadPool* pool = nullptr)
-      : ArrayRecordReaderBase(std::move(options), pool),
-        main_reader_(ThreadCompatibleSharedPtr<riegeli::Reader>::Create<Src>(
-            std::move(src_args))) {
-    if (!main_reader_->ok()) {
-      Fail(main_reader_->status());
-      return;
-    }
-    if (!main_reader_->SupportsNewReader()) {
-      Fail(absl::InvalidArgumentError(
-          "ArrayRecordReader only work on inputs with random access support."));
-      return;
-    }
-    Initialize();
-  }
+      : ArrayRecordReader(
+            std::apply(
+                [](SrcArgs&&... src_args) -> riegeli::MakerType<SrcArgs...> {
+                  return {std::forward<SrcArgs>(src_args)...};
+                },
+                std::move(src_args)),
+            options, pool) {}
 
  protected:
-  ThreadCompatibleSharedPtr<riegeli::Reader> get_backing_reader()
-      const override {
-    return main_reader_;
+  DependencyShare<riegeli::Reader*> get_backing_reader() const override {
+    return main_reader_.Share();
   }
 
   void Done() override {
-    if (main_reader_.is_owning()) {
-      // Blocks until all detached readahead fetches finishes.
-      main_reader_->Close();
+    auto& unique = main_reader_.WaitUntilUnique();
+    if (unique.IsOwning()) {
+      if (!unique->Close()) Fail(unique->status());
     }
   }
 
  private:
-  ThreadCompatibleSharedPtr<riegeli::Reader> main_reader_;
+  ShareableDependency<riegeli::Reader*, Src> main_reader_;
 };
+
+template <typename Src>
+explicit ArrayRecordReader(
+    Src&& src,
+    ArrayRecordReaderBase::Options options = ArrayRecordReaderBase::Options(),
+    ARThreadPool* pool = nullptr)
+    -> ArrayRecordReader<riegeli::InitializerTargetT<Src>>;
 
 }  // namespace array_record
 

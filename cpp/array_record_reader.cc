@@ -16,39 +16,38 @@ limitations under the License.
 #include "cpp/array_record_reader.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <future>  // NOLINT(build/c++11)
-#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <queue>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "absl/base/optimization.h"
-#include "absl/base/thread_annotations.h"
-#include "absl/functional/bind_front.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
-#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
 #include "cpp/masked_reader.h"
 #include "cpp/parallel_for.h"
-#include "cpp/thread_compatible_shared_ptr.h"
+#include "cpp/thread_pool.h"
+#include "third_party/protobuf/message_lite.h"
 #include "riegeli/base/object.h"
 #include "riegeli/base/options_parser.h"
 #include "riegeli/base/status.h"
 #include "riegeli/bytes/reader.h"
+#include "riegeli/chunk_encoding/chunk.h"
 #include "riegeli/chunk_encoding/chunk_decoder.h"
 #include "riegeli/records/chunk_reader.h"
-#include "riegeli/records/record_position.h"
 
 namespace array_record {
 
@@ -163,16 +162,13 @@ ArrayRecordReaderBase& ArrayRecordReaderBase::operator=(
 // evaluated variables for random access are all initialized. Therefore it's
 // safe to access the reader from multiple threads later on, even though the
 // methods wasn't const.
-ChunkDecoder ReadChunk(const ThreadCompatibleSharedPtr<Reader>& reader,
-                       size_t pos, size_t len) {
+ChunkDecoder ReadChunk(Reader& reader, size_t pos, size_t len) {
   ChunkDecoder decoder;
-  if (!reader->ok()) {
-    decoder.Fail(reader->status());
+  if (!reader.ok()) {
+    decoder.Fail(reader.status());
     return decoder;
   }
-  Reader* mutable_reader =
-      const_cast<Reader*>(reinterpret_cast<const Reader*>(reader.get()));
-  MaskedReader masked_reader(mutable_reader->NewReader(pos), len);
+  MaskedReader masked_reader(reader.NewReader(pos), len);
   if (!masked_reader.ok()) {
     decoder.Fail(masked_reader.status());
     return decoder;
@@ -203,18 +199,16 @@ void ArrayRecordReaderBase::Initialize() {
 
   AR_ENDO_TASK("Reading ArrayRecord footer");
   const auto reader = get_backing_reader();
-  Reader* mutable_reader =
-      const_cast<Reader*>(reinterpret_cast<const Reader*>(reader.get()));
   RiegeliFooterMetadata footer_metadata;
   ChunkDecoder footer_decoder;
   {
     AR_ENDO_SCOPE("Reading postscript and footer chunk");
-    if (!mutable_reader->SupportsRandomAccess()) {
+    if (!reader->SupportsRandomAccess()) {
       Fail(InvalidArgumentError(
           "ArrayRecordReader only work on inputs with random access support."));
       return;
     }
-    auto maybe_size = mutable_reader->Size();
+    auto maybe_size = reader->Size();
     if (!maybe_size.has_value()) {
       Fail(InvalidArgumentError("Could not obtain the size of the input"));
       return;
@@ -227,7 +221,7 @@ void ArrayRecordReaderBase::Initialize() {
     }
     RiegeliPostscript postscript;
     auto postscript_decoder =
-        ReadChunk(reader, size - kRiegeliBlockSize, kRiegeliBlockSize);
+        ReadChunk(*reader, size - kRiegeliBlockSize, kRiegeliBlockSize);
     if (!postscript_decoder.ReadRecord(postscript)) {
       Fail(Annotate(postscript_decoder.status(),
                     "Failed to read RiegeliPostscript"));
@@ -245,7 +239,7 @@ void ArrayRecordReaderBase::Initialize() {
     }
     state_->footer_offset = postscript.footer_offset();
     footer_decoder =
-        ReadChunk(reader, postscript.footer_offset(),
+        ReadChunk(*reader, postscript.footer_offset(),
                   size - kRiegeliBlockSize - postscript.footer_offset());
 
     if (!footer_decoder.ReadRecord(footer_metadata)) {
@@ -333,8 +327,6 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
   uint64_t num_chunk_groups =
       CeilOfRatio(state_->chunk_offsets.size(), state_->chunk_group_size);
   const auto reader = get_backing_reader();
-  Reader* mutable_reader = const_cast<Reader*>(
-      reinterpret_cast<const Reader*>(reader.get()));
   auto status = ParallelForWithStatus<1>(
       Seq(num_chunk_groups), state_->pool, [&](size_t buf_idx) -> absl::Status {
         uint64_t chunk_idx_start = buf_idx * state_->chunk_group_size;
@@ -352,7 +344,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              mutable_reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
+              reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
@@ -402,8 +394,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
     return absl::OkStatus();
   }
   if (end > NumRecords() || begin >= end) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Invalid range [%d, %d). Total records: %d", begin, end, NumRecords()));
+    return InvalidArgumentError("Invalid range [%d, %d). Total records: %d",
+                                begin, end, NumRecords());
   }
   uint64_t chunk_idx_begin = begin / state_->record_group_size;
   uint64_t chunk_idx_end = CeilOfRatio(end, state_->record_group_size);
@@ -411,8 +403,6 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
   uint64_t num_chunk_groups = CeilOfRatio(num_chunks, state_->chunk_group_size);
 
   const auto reader = get_backing_reader();
-  Reader* mutable_reader =
-      const_cast<Reader*>(reinterpret_cast<const Reader*>(reader.get()));
   auto status = ParallelForWithStatus<1>(
       Seq(num_chunk_groups), state_->pool, [&](size_t buf_idx) -> absl::Status {
         uint64_t chunk_idx_start =
@@ -431,7 +421,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              mutable_reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
+              reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
@@ -536,8 +526,6 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     }
   }
   const auto reader = get_backing_reader();
-  Reader* mutable_reader = const_cast<Reader*>(
-      reinterpret_cast<const Reader*>(reader.get()));
   auto status = ParallelForWithStatus<1>(
       IndicesOf(chunk_indices_per_buffer), state_->pool,
       [&](size_t buf_idx) -> absl::Status {
@@ -551,10 +539,9 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
         MaskedReader masked_reader(riegeli::kClosed);
         {
           AR_ENDO_SCOPE("MaskedReader");
-          masked_reader =
-              MaskedReader(mutable_reader->NewReader(
-                               state_->chunk_offsets[buffer_chunks[0]]),
-                           buf_len);
+          masked_reader = MaskedReader(
+              reader->NewReader(state_->chunk_offsets[buffer_chunks[0]]),
+              buf_len);
         }
         for (auto chunk_idx : buffer_chunks) {
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
@@ -674,7 +661,7 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
       uint64_t chunk_offset = state_->chunk_offsets[chunk_idx];
       uint64_t chunk_end_offset = state_->ChunkEndOffset(chunk_idx);
       decoders.push_back(
-          ReadChunk(reader, chunk_offset, chunk_end_offset - chunk_offset));
+          ReadChunk(*reader, chunk_offset, chunk_end_offset - chunk_offset));
     }
     state_->buffer_idx = buffer_idx;
     state_->current_decoders = std::move(decoders);
@@ -729,13 +716,11 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
         decoder_promise->set_value(std::move(decoders));
         return;
       }
-      Reader* mutable_reader =
-          const_cast<Reader*>(reinterpret_cast<const Reader*>(reader.get()));
       MaskedReader masked_reader(riegeli::kClosed);
       {
         AR_ENDO_SCOPE("MaskedReader");
-        masked_reader = MaskedReader(
-            mutable_reader->NewReader(chunk_offsets.front()), buffer_len);
+        masked_reader =
+            MaskedReader(reader->NewReader(chunk_offsets.front()), buffer_len);
       }
       if (!masked_reader.ok()) {
         for (auto& decoder : decoders) {

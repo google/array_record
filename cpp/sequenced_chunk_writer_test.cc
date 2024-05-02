@@ -15,24 +15,29 @@ limitations under the License.
 
 #include "cpp/sequenced_chunk_writer.h"
 
+#include <cstdint>
 #include <future>  // NOLINT(build/c++11)
 #include <memory>
 #include <string>
-#include <tuple>
 #include <utility>
+#include <vector>
 
-#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/cord.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/thread_pool.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/bytes/chain_writer.h"
 #include "riegeli/bytes/cord_writer.h"
 #include "riegeli/bytes/string_reader.h"
 #include "riegeli/bytes/string_writer.h"
 #include "riegeli/chunk_encoding/chunk.h"
 #include "riegeli/chunk_encoding/compressor_options.h"
+#include "riegeli/chunk_encoding/constants.h"
 #include "riegeli/chunk_encoding/simple_encoder.h"
 #include "riegeli/records/record_reader.h"
 
@@ -45,14 +50,12 @@ TEST(SequencedChunkWriterTest, RvalCtorTest) {
   {
     std::string dest;
     auto str_writer = riegeli::StringWriter(&dest);
-    auto to_string =
-        SequencedChunkWriter<riegeli::StringWriter<>>(std::move(str_writer));
+    auto to_string = SequencedChunkWriter(std::move(str_writer));
   }
   {
     absl::Cord cord;
     auto cord_writer = riegeli::CordWriter(&cord);
-    auto to_cord =
-        SequencedChunkWriter<riegeli::CordWriter<>>(std::move(cord_writer));
+    auto to_cord = SequencedChunkWriter(std::move(cord_writer));
   }
   {
     std::string dest;
@@ -76,25 +79,25 @@ TEST(SequencedChunkWriterTest, DestArgsCtorTest) {
   {
     std::string dest;
     auto to_string =
-        SequencedChunkWriter<riegeli::StringWriter<>>(std::make_tuple(&dest));
+        SequencedChunkWriter(riegeli::Maker<riegeli::StringWriter>(&dest));
   }
   {
     absl::Cord cord;
     auto to_cord =
-        SequencedChunkWriter<riegeli::CordWriter<>>(std::make_tuple(&cord));
+        SequencedChunkWriter(riegeli::Maker<riegeli::CordWriter>(&cord));
   }
 
   {
     std::string dest;
     auto to_string =
         std::make_unique<SequencedChunkWriter<riegeli::StringWriter<>>>(
-            std::make_tuple(&dest));
+            riegeli::Maker(&dest));
   }
   {
     absl::Cord cord;
     auto to_cord =
         std::make_unique<SequencedChunkWriter<riegeli::CordWriter<>>>(
-            std::make_tuple(&cord));
+            riegeli::Maker(&cord));
   }
 }
 
@@ -118,7 +121,7 @@ TEST(SequencedChunkWriterTest, SanityTestCodeSnippet) {
   auto callback = TestCommitChunkCallback();
 
   auto writer = std::make_shared<SequencedChunkWriter<riegeli::StringWriter<>>>(
-      std::make_tuple(&encoded));
+      riegeli::Maker(&encoded));
   writer->set_submit_chunk_callback(&callback);
   ASSERT_TRUE(writer->ok()) << writer->status();
 
@@ -151,8 +154,8 @@ TEST(SequencedChunkWriterTest, SanityTestCodeSnippet) {
   EXPECT_TRUE(writer->Close());
 
   // File produced by SequencedChunkWriter should be a valid riegeli file.
-  auto reader = riegeli::RecordReader<riegeli::StringReader<>>(
-      std::forward_as_tuple(encoded));
+  auto reader =
+      riegeli::RecordReader(riegeli::Maker<riegeli::StringReader>(encoded));
   ASSERT_TRUE(reader.CheckFileFormat());
   // Read sequentially
   absl::Cord result;
@@ -184,7 +187,7 @@ TEST(SequencedChunkWriterTest, SanityTestBadChunk) {
   auto callback = TestCommitChunkCallback();
 
   auto writer = std::make_shared<SequencedChunkWriter<riegeli::StringWriter<>>>(
-      std::make_tuple(&encoded));
+      riegeli::Maker(&encoded));
   writer->set_submit_chunk_callback(&callback);
   ASSERT_TRUE(writer->ok()) << writer->status();
   std::packaged_task<absl::StatusOr<riegeli::Chunk>()> encoding_task(
