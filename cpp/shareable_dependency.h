@@ -180,7 +180,6 @@ struct DependencyShare<Handle>::Sharing {
   }
   bool HasUniqueOwner() const { return ref_count.HasUniqueOwner(); }
   void WaitUntilUnique() const {
-    if (HasUniqueOwner()) return;
     absl::MutexLock l(&mu, absl::Condition(this, &Sharing::HasUniqueOwner));
   }
 
