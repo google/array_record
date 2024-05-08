@@ -63,10 +63,8 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
-#include <tuple>
 #include <utility>
 
-#include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -386,22 +384,6 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
         dest_(riegeli::Maker<SequencedChunkWriter>(std::move(dest))) {
     Initialize();
   }
-
-  template <typename... DestArgs>
-  ABSL_DEPRECATED(
-      "Use riegeli::Maker<Dest>(dest_args...) instead of "
-      "std::forward_as_tuple(dest_args...), if possible using CTAD to deduce "
-      "the template argument of ArrayRecordWriter as Dest")
-  explicit ArrayRecordWriter(std::tuple<DestArgs...> dest_args,
-                             Options options = Options(),
-                             ARThreadPool* pool = nullptr)
-      : ArrayRecordWriter(
-            std::apply(
-                [](DestArgs&&... dest_args) -> riegeli::MakerType<DestArgs...> {
-                  return {std::forward<DestArgs>(dest_args)...};
-                },
-                std::move(dest_args)),
-            options, pool) {}
 
  protected:
   riegeli::SharedPtr<SequencedChunkWriterBase> get_writer() final {

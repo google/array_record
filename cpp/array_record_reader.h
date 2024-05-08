@@ -36,7 +36,6 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
-#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -51,7 +50,6 @@ limitations under the License.
 #include "cpp/thread_pool.h"
 #include "third_party/protobuf/message_lite.h"
 #include "riegeli/base/initializer.h"
-#include "riegeli/base/maker.h"
 #include "riegeli/base/object.h"
 #include "riegeli/bytes/reader.h"
 
@@ -359,22 +357,6 @@ class ArrayRecordReader : public ArrayRecordReaderBase {
     }
     Initialize();
   }
-
-  template <typename... SrcArgs>
-  ABSL_DEPRECATED(
-      "Use riegeli::Maker<Src>(src_args...) instead of "
-      "std::forward_as_tuple(src_args...), if possible using CTAD to deduce "
-      "the template argument of ArrayRecordReader as Src")
-  explicit ArrayRecordReader(std::tuple<SrcArgs...> src_args,
-                             Options options = Options(),
-                             ARThreadPool* pool = nullptr)
-      : ArrayRecordReader(
-            std::apply(
-                [](SrcArgs&&... src_args) -> riegeli::MakerType<SrcArgs...> {
-                  return {std::forward<SrcArgs>(src_args)...};
-                },
-                std::move(src_args)),
-            options, pool) {}
 
  protected:
   DependencyShare<riegeli::Reader*> get_backing_reader() const override {
