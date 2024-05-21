@@ -18,15 +18,18 @@ limitations under the License.
 
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
+#include "cpp/common.h"
 #include "cpp/thread_pool.h"
 
 namespace array_record {
@@ -39,6 +42,18 @@ class ParallelForTest : public testing::Test {
   static constexpr int32_t kNumElements = 1000000;
   ARThreadPool* pool_;
 };
+
+TEST_F(ParallelForTest, AtomicCounterTest) {
+  std::vector<int32_t> items(kNumElements, 0);
+  ParallelFor(Seq(kNumElements), pool_, [&](size_t j) { items[j] = 1; });
+  int32_t num_accessed = 0;
+  for (auto item_was_accessed : items) {
+    if (item_was_accessed) {
+      num_accessed++;
+    }
+  }
+  EXPECT_EQ(num_accessed, kNumElements);
+}
 
 TEST_F(ParallelForTest, ImplicitStepImplicitBlock) {
   std::vector<double> result(kNumElements);

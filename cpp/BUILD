@@ -264,6 +264,7 @@ cc_test(
     size = "small",
     srcs = ["parallel_for_test.cc"],
     deps = [
+        ":common",
         ":parallel_for",
         ":thread_pool",
         "@com_google_absl//absl/functional:function_ref",

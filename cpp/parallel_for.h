@@ -32,6 +32,7 @@ limitations under the License.
 #include "cpp/common.h"
 #include "cpp/thread_pool.h"
 
+
 namespace array_record {
 
 // kDynamicBatchSize - when a batch size isn't specified, ParallelFor defaults
@@ -161,7 +162,7 @@ namespace parallel_for_internal {
 // ParallelForClosure - a single heap-allocated object that holds the loop's
 // state. The object will delete itself when the final task completes.
 template <size_t kItersPerBatch, typename SeqT, typename Function>
-  class ParallelForClosure : public std::function<void()> {
+  class ParallelForClosure {
  public:
   static constexpr bool kIsDynamicBatch = (kItersPerBatch == kDynamicBatchSize);
   ParallelForClosure(SeqT seq, Function func)
@@ -210,7 +211,7 @@ template <size_t kItersPerBatch, typename SeqT, typename Function>
     if (--reference_count_ == 0) delete this;
   }
 
-    void Run() {
+  void Run() {
     // Do work on a child thread. Before starting any work, each child thread
     // takes a reader lock, preventing the main thread from finishing while
     // any child threads are still executing in the core loop.
