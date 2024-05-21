@@ -370,10 +370,6 @@ void ArrayRecordWriterBase::Done() {
     return;
   }
   auto writer = get_writer();
-  if (writer == nullptr) {
-    Fail(absl::InternalError("writer should not be a nullptr."));
-    return;
-  }
   if (!writer->ok()) {
     Fail(riegeli::Annotate(writer->status(), "SequencedChunkWriter failure"));
     return;
@@ -391,9 +387,6 @@ void ArrayRecordWriterBase::Done() {
     chunk_promise.set_value(EncodeChunk(chunk_encoder_.get()));
   }
   submit_chunk_callback_->WriteFooterAndPostscript(writer.get());
-  if (!writer->Close()) {
-    Fail(writer->status());
-  }
 }
 
 std::unique_ptr<riegeli::ChunkEncoder> ArrayRecordWriterBase::CreateEncoder() {

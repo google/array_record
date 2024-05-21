@@ -20,6 +20,7 @@ limitations under the License.
 #include <future>  // NOLINT(build/c++11)
 #include <utility>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/synchronization/mutex.h"
@@ -153,7 +154,10 @@ void SequencedChunkWriterBase::Initialize() {
 }
 
 void SequencedChunkWriterBase::Done() {
-  SubmitFutureChunks(true);
+  if (!SubmitFutureChunks(true)) {
+    Fail(absl::InternalError("Unable to submit pending chunks"));
+    return;
+  }
   auto* chunk_writer = get_writer();
   if (!chunk_writer->Close()) {
     Fail(riegeli::Annotate(chunk_writer->status(),

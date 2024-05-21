@@ -70,11 +70,10 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/sequenced_chunk_writer.h"
+#include "cpp/shareable_dependency.h"
 #include "cpp/thread_pool.h"
 #include "riegeli/base/initializer.h"
-#include "riegeli/base/maker.h"
 #include "riegeli/base/object.h"
-#include "riegeli/base/shared_ptr.h"
 #include "riegeli/bytes/writer.h"
 #include "riegeli/chunk_encoding/chunk_encoder.h"
 #include "riegeli/chunk_encoding/compressor_options.h"
@@ -318,7 +317,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
   ArrayRecordWriterBase(ArrayRecordWriterBase&& other) noexcept;
   ArrayRecordWriterBase& operator=(ArrayRecordWriterBase&& other) noexcept;
 
-  virtual riegeli::SharedPtr<SequencedChunkWriterBase> get_writer() = 0;
+  virtual DependencyShare<SequencedChunkWriterBase*> get_writer() = 0;
 
   // Initializes and validates the underlying writer states.
   void Initialize();
@@ -381,17 +380,37 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
                              Options options = Options(),
                              ARThreadPool* pool = nullptr)
       : ArrayRecordWriterBase(std::move(options), pool),
-        dest_(riegeli::Maker<SequencedChunkWriter>(std::move(dest))) {
+        main_writer_(
+            std::make_unique<SequencedChunkWriter<Dest>>(std::move(dest))) {
+    auto& unique = main_writer_.WaitUntilUnique();
+    if (!unique->ok()) {
+      Fail(unique->status());
+      return;
+    }
     Initialize();
   }
 
  protected:
-  riegeli::SharedPtr<SequencedChunkWriterBase> get_writer() final {
-    return dest_;
+  DependencyShare<SequencedChunkWriterBase*> get_writer() final {
+    return main_writer_.Share();
+  }
+
+  void Done() override {
+    // WaitUntilUnique ensures all pending tasks are finished.
+    auto& unique = main_writer_.WaitUntilUnique();
+    ArrayRecordWriterBase::Done();
+    if (!ok()) {
+      return;
+    }
+    if (unique.IsOwning()) {
+      if (!unique->Close()) Fail(unique->status());
+    }
   }
 
  private:
-  riegeli::SharedPtr<SequencedChunkWriter<Dest>> dest_;
+  ShareableDependency<SequencedChunkWriterBase*,
+                      std::unique_ptr<SequencedChunkWriter<Dest>>>
+      main_writer_;
 };
 
 template <typename Dest>
