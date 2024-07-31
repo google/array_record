@@ -281,13 +281,8 @@ void ArrayRecordReaderBase::Initialize() {
         return;
       }
       if (i == 0) {
-        // Detect group size from first footer (must be a positive integer).
-        // This should match the group_size in writer options but writer_options
-        // is not always available.
-        if (footer.num_records() == 0) {
-          Fail(InvalidArgumentError("Invalid footer: num_records must be positive"));
-          return;
-        }
+        // Detect group size from first footer. This should match the group_size
+        // in writer options but writer_options is not always available.
         state_->record_group_size = footer.num_records();
       }
       state_->chunk_offsets.push_back(footer.chunk_offset());

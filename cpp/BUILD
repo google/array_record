@@ -15,6 +15,11 @@ cc_proto_library(
     deps = [":layout_proto"],
 )
 
+go_proto_library(
+    name = "layout_go_proto",
+    deps = [":layout_proto"],
+)
+
 cc_library(
     name = "common",
     hdrs = ["common.h"],
