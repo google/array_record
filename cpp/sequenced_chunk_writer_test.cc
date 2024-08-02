@@ -129,7 +129,8 @@ TEST(SequencedChunkWriterTest, SanityTestCodeSnippet) {
     std::packaged_task<absl::StatusOr<riegeli::Chunk>()> encoding_task([i] {
       riegeli::Chunk chunk;
       riegeli::SimpleEncoder encoder(
-          riegeli::CompressorOptions().set_uncompressed(), 1);
+          riegeli::CompressorOptions().set_uncompressed(),
+          riegeli::SimpleEncoder::TuningOptions().set_size_hint(1));
       std::string text_to_encode = std::to_string(i);
       EXPECT_TRUE(encoder.AddRecord(absl::string_view(text_to_encode)));
       riegeli::ChunkType chunk_type;

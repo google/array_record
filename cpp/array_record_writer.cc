@@ -17,30 +17,29 @@ limitations under the License.
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <future>  // NOLINT(build/c++11)
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
-#include "google/protobuf/message_lite.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
-#include "absl/time/clock.h"
-#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
 #include "cpp/sequenced_chunk_writer.h"
 #include "cpp/thread_pool.h"
+#include "third_party/protobuf/message_lite.h"
 #include "riegeli/base/object.h"
 #include "riegeli/base/options_parser.h"
 #include "riegeli/base/status.h"
@@ -105,7 +104,8 @@ absl::StatusOr<Chunk> ChunkFromSpan(CompressorOptions compression_options,
                                     std::optional<H> header = std::nullopt) {
   riegeli::SimpleEncoder encoder(
       compression_options,
-      span.size() * sizeof(typename decltype(span)::value_type));
+      riegeli::SimpleEncoder::TuningOptions().set_size_hint(
+          span.size() * sizeof(typename decltype(span)::value_type)));
   if (header.has_value()) {
     encoder.AddRecord(header.value());
   }
@@ -335,8 +335,7 @@ void ArrayRecordWriterBase::Initialize() {
   auto writer = get_writer();
   writer->set_pad_to_block_boundary(options_.pad_to_block_boundary());
   if (options_.metadata().has_value()) {
-    riegeli::TransposeEncoder encoder(options_.compressor_options(),
-                                      UINT64_MAX);
+    riegeli::TransposeEncoder encoder(options_.compressor_options());
     Chunk chunk;
     ChunkType chunk_type;
     uint64_t decoded_data_size;
@@ -393,11 +392,14 @@ std::unique_ptr<riegeli::ChunkEncoder> ArrayRecordWriterBase::CreateEncoder() {
   std::unique_ptr<riegeli::ChunkEncoder> encoder;
   if (options_.transpose()) {
     encoder = std::make_unique<riegeli::TransposeEncoder>(
-        options_.compressor_options(), options_.transpose_bucket_size());
+        options_.compressor_options(),
+        riegeli::TransposeEncoder::TuningOptions().set_bucket_size(
+            options_.transpose_bucket_size()));
   } else {
     encoder = std::make_unique<riegeli::SimpleEncoder>(
         options_.compressor_options(),
-        submit_chunk_callback_->get_last_decoded_data_size());
+        riegeli::SimpleEncoder::TuningOptions().set_size_hint(
+            submit_chunk_callback_->get_last_decoded_data_size()));
   }
   if (pool_) {
     return std::make_unique<riegeli::DeferredEncoder>(std::move(encoder));
