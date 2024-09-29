@@ -15,11 +15,6 @@ cc_proto_library(
     deps = [":layout_proto"],
 )
 
-go_proto_library(
-    name = "layout_go_proto",
-    deps = [":layout_proto"],
-)
-
 cc_library(
     name = "common",
     hdrs = ["common.h"],
@@ -58,7 +53,7 @@ cc_library(
     hdrs = ["thread_pool.h"],
     deps = [
         "@com_google_absl//absl/flags:flag",
-        "@eigen3//:eigen3",
+        "@eigen//:eigen",
     ],
 )
 
@@ -119,7 +114,7 @@ cc_library(
         ":sequenced_chunk_writer",
         ":shareable_dependency",
         ":thread_pool",
-        "//third_party/protobuf:protobuf_lite",
+        "@com_google_protobuf//:protobuf_lite",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -171,7 +166,7 @@ cc_library(
         ":parallel_for",
         ":shareable_dependency",
         ":thread_pool",
-        "//third_party/protobuf:protobuf_lite",
+        "@com_google_protobuf//:protobuf_lite",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/functional:function_ref",

@@ -21,7 +21,6 @@ from absl.testing import absltest
 from array_record.python.array_record_module import ArrayRecordReader
 from array_record.python.array_record_module import ArrayRecordWriter
 
-
 class ArrayRecordModuleTest(absltest.TestCase):
 
   def setUp(self):

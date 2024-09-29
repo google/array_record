@@ -1,0 +1,8 @@
+# Bazel related files
+bazel-*
+*.bazel
+bazel-bin/
+bazel-out/
+bazel-testlogs/
+bazel-genfiles/
+# End Generation Here
