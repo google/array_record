@@ -169,7 +169,9 @@ template <typename Handle>
 struct DependencyShare<Handle>::Sharing {
   explicit Sharing(Handle handle) : handle(std::move(handle)) {}
 
-  void Ref() const { ref_count.Ref(); }
+  void Ref() const { 
+    ref_count.Ref();
+  }
   void Unref() const {
     // Notify the `ShareableDependency` if there are no more shares.
     absl::MutexLock l(&mu);
@@ -178,8 +180,10 @@ struct DependencyShare<Handle>::Sharing {
           << "The last DependencyShare outlived the ShareableDependency";
     }
   }
-  bool HasUniqueOwner() const { return ref_count.HasUniqueOwner(); }
-  void WaitUntilUnique() const {
+  bool HasUniqueOwner() const { 
+    return ref_count.HasUniqueOwner(); 
+  }
+  void WaitUntilUnique() const {    
     absl::MutexLock l(&mu, absl::Condition(this, &Sharing::HasUniqueOwner));
   }
 

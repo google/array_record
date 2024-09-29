@@ -39,7 +39,7 @@ limitations under the License.
 #include "cpp/layout.pb.h"
 #include "cpp/sequenced_chunk_writer.h"
 #include "cpp/thread_pool.h"
-#include "third_party/protobuf/message_lite.h"
+#include "google/protobuf/message_lite.h"
 #include "riegeli/base/object.h"
 #include "riegeli/base/options_parser.h"
 #include "riegeli/base/status.h"
