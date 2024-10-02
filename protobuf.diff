@@ -1,0 +1,17 @@
+diff --git a/src/google/protobuf/message_lite.cc b/src/google/protobuf/message_lite.cc
+index c0456c3f2..5006d2901 100644
+--- a/src/google/protobuf/message_lite.cc
++++ b/src/google/protobuf/message_lite.cc
+@@ -696,9 +696,9 @@ void OnShutdown(void (*func)()) {
+ }
+
+ void OnShutdownRun(void (*f)(const void*), const void* arg) {
+-  auto shutdown_data = ShutdownData::get();
+-  absl::MutexLock lock(&shutdown_data->mutex);
+-  shutdown_data->functions.push_back(std::make_pair(f, arg));
++  // auto shutdown_data = ShutdownData::get();
++  // absl::MutexLock lock(&shutdown_data->mutex);
++  // shutdown_data->functions.push_back(std::make_pair(f, arg));
+ }
+
+ }  // namespace internal
