@@ -1,6 +1,11 @@
 common --enable_bzlmod
-build -c opt
+build -c dbg
 build --cxxopt=-std=c++17
 build --host_cxxopt=-std=c++17
 build --experimental_repo_remote_exec
-build --toolchain_resolution_debug='@@rules_python//python/cc:toolchain_type'
+build --copt=-pthread
+build --features=debug_prefix_map_pwd_is_dot
+build --apple_generate_dsym
+build --strip=never
+build --features=oso_prefix_is_pwd
+build --spawn_strategy=local
