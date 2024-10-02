@@ -73,12 +73,12 @@ TEST_F(ShareableDependencyTest, SanityTest) {
   EXPECT_FALSE(new_main.IsUnique());  // NOLINT(bugprone-use-after-move)
 
   absl::Notification notification;
-  pool_->Schedule([refobj = main.Share(), &notification] {
+  pool_->Schedule([refobj = std::make_shared<DependencyShare<FooBase*>>(main.Share()), &notification] {
     notification.WaitForNotification();
     absl::SleepFor(absl::Milliseconds(10));
-    EXPECT_EQ(refobj->value(), 1);
-    const auto second_ref = refobj;
-    refobj->add_value(1);
+    EXPECT_EQ(refobj.get()->get()->value(), 1);
+    const auto second_ref = refobj.get();
+    refobj.get()->get()->add_value(1);
   });
   EXPECT_FALSE(main.IsUnique());
   notification.Notify();
@@ -97,12 +97,12 @@ TEST_F(ShareableDependencyTest, SanityTestWithReset) {
   EXPECT_TRUE(main.IsUnique());
 
   absl::Notification notification;
-  pool_->Schedule([refobj = main.Share(), &notification] {
+  pool_->Schedule([refobj = std::make_shared<DependencyShare<FooBase*>>(main.Share()), &notification] {
     notification.WaitForNotification();
     absl::SleepFor(absl::Milliseconds(10));
-    EXPECT_EQ(refobj->value(), 1);
+    EXPECT_EQ(refobj.get()->get()->value(), 1);
     const auto second_ref = refobj;
-    refobj->add_value(1);
+    refobj.get()->get()->add_value(1);
   });
   EXPECT_FALSE(main.IsUnique());
   notification.Notify();
