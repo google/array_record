@@ -328,7 +328,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
       CeilOfRatio(static_cast<uint64_t>(state_->chunk_offsets.size()), static_cast<uint64_t>(state_->chunk_group_size));
   const auto reader = get_backing_reader();
   auto status = ParallelForWithStatus<1>(
-      Seq(num_chunk_groups), state_->pool, [&](size_t buf_idx) -> absl::Status {
+      Seq(num_chunk_groups), state_->pool, absl::AnyInvocable<absl::Status(size_t)>([&](size_t buf_idx) -> absl::Status {
         uint64_t chunk_idx_start = buf_idx * state_->chunk_group_size;
         // inclusive index, not the conventional exclusive index.
         uint64_t last_chunk_idx =
@@ -379,7 +379,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
           }
         }
         return absl::OkStatus();
-      });
+      }));
   return status;
 }
 
@@ -404,7 +404,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
 
   const auto reader = get_backing_reader();
   auto status = ParallelForWithStatus<1>(
-      Seq(num_chunk_groups), state_->pool, [&](size_t buf_idx) -> absl::Status {
+      Seq(num_chunk_groups), state_->pool, absl::AnyInvocable<absl::Status(size_t)>([&](size_t buf_idx) -> absl::Status {
         uint64_t chunk_idx_start =
             chunk_idx_begin + buf_idx * state_->chunk_group_size;
         // inclusive index, not the conventional exclusive index.
@@ -466,7 +466,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
           }
         }
         return absl::OkStatus();
-      });
+      }));
   return status;
 }
 
@@ -528,7 +528,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
   const auto reader = get_backing_reader();
   auto status = ParallelForWithStatus<1>(
       IndicesOf(chunk_indices_per_buffer), state_->pool,
-      [&](size_t buf_idx) -> absl::Status {
+      absl::AnyInvocable<absl::Status(size_t)>([&](size_t buf_idx) -> absl::Status {
         auto buffer_chunks =
             absl::MakeConstSpan(chunk_indices_per_buffer[buf_idx]);
         uint64_t buf_len = state_->ChunkEndOffset(buffer_chunks.back()) -
@@ -575,7 +575,7 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
           }
         }
         return absl::OkStatus();
-      });
+      }));
   return status;
 }
 
@@ -674,7 +674,7 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
   }
 
   // Used for running one extra task in this thread.
-  std::function<void()> current_task = []{};
+  absl::AnyInvocable<void()> current_task = []{};
 
   while (state_->future_decoders.size() < max_parallelism) {
     uint64_t buffer_to_add = buffer_idx + state_->future_decoders.size();

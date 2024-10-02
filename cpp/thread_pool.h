@@ -1,3 +1,40 @@
+#ifndef THREAD_POOL_H_
+#define THREAD_POOL_H_
+
+#include <cassert>
+#include <cstddef>
+#include <functional>
+#include <queue>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "absl/base/thread_annotations.h"
+#include "absl/functional/any_invocable.h"
+#include "absl/synchronization/mutex.h"
+
+// A simple ThreadPool implementation for tests.
+class ThreadPool {
+ public:
+  explicit ThreadPool(int num_threads);
+  ThreadPool(const ThreadPool &) = delete;
+  ThreadPool &operator=(const ThreadPool &) = delete;
+  ~ThreadPool();
+  uint64_t NumThreads();
+
+  // Schedule a function to be run on a ThreadPool thread immediately.
+  void Schedule(absl::AnyInvocable<void()> func);
+
+ private:
+  bool WorkAvailable() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  void WorkLoop();
+  uint64_t num_threads_;
+  absl::Mutex mu_;
+  std::queue<absl::AnyInvocable<void()>> queue_ ABSL_GUARDED_BY(mu_);
+  std::vector<std::thread> threads_;
+};
+
+#endif  // THREAD_POOL_H_
 /* Copyright 2022 Google LLC. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,7 +58,7 @@ limitations under the License.
 
 namespace array_record {
 
-using ARThreadPool = Eigen::ThreadPoolInterface;
+using ARThreadPool = ThreadPool;
 
 ARThreadPool* ArrayRecordGlobalPool();
 
