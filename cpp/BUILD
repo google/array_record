@@ -53,7 +53,6 @@ cc_library(
     hdrs = ["thread_pool.h"],
     deps = [
         "@com_google_absl//absl/flags:flag",
-        "@eigen//:eigen",
     ],
 )
 

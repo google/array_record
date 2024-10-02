@@ -53,8 +53,6 @@ limitations under the License.
 #ifndef ARRAY_RECORD_CPP_THREAD_POOL_H_
 #define ARRAY_RECORD_CPP_THREAD_POOL_H_
 
-#define EIGEN_USE_CUSTOM_THREAD_POOL
-#include "unsupported/Eigen/CXX11/ThreadPool"
 
 namespace array_record {
 
