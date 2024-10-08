@@ -13,11 +13,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <stdint.h>
+
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
+#include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "cpp/array_record_reader.h"
 #include "cpp/array_record_writer.h"
@@ -72,7 +78,7 @@ PYBIND11_MODULE(array_record_module, m) {
       // We accept only py::bytes (and not unicode strings) since we expect
       // most users to store binary data (e.g. serialized protocol buffers).
       // We cannot know if a users wants to write+read unicode and forcing users
-      // to encode() their unicode strings avoids accidential convertions.
+      // to encode() their unicode strings avoids accidental conversions.
       .def("write", [](ArrayRecordWriter& writer, py::bytes record) {
         if (!writer.WriteRecord(record)) {
           throw std::runtime_error(std::string(writer.status().message()));
@@ -96,8 +102,8 @@ PYBIND11_MODULE(array_record_module, m) {
                if (file_reader_buffer_size.has_value()) {
                  file_reader_options.set_buffer_size(*file_reader_buffer_size);
                }
-               file_reader = std::make_unique<riegeli::FdReader<>>(path,
-               file_reader_options);
+               file_reader = std::make_unique<riegeli::FdReader<>>(
+                   path, file_reader_options);
              }
              if (!file_reader->ok()) {
                throw std::runtime_error(
