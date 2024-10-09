@@ -35,7 +35,6 @@ package array_record;
 // chunk size 64KB and is 64KB aligned. Therefore we can locate it by
 // subtracting the file size by 64KB. See the illustrated file layout below.
 //
-//
 //  +-----------------+
 //  |    User Data    |
 //  |  Riegeli Chunk  |
@@ -55,7 +54,6 @@ package array_record;
 //  +-----------------+---------+-----------------------+
 //  |RiegeliPostscript| <--- Must Align 64KB and fit in 64KB.
 //  +-----------------+
-//
 //
 // The footer is composed of a header (RiegeliFooterMetadata) and an array of
 // proto records. We choose an array of proto records instead of repeated fields
@@ -82,6 +80,7 @@ message RiegeliFooterMetadata {
     optional uint32 version = 1;
     optional uint64 num_chunks = 2;
     optional uint64 num_records = 3;
+
     // Writer options for debugging purposes.
     optional string writer_options = 4;
   }
@@ -91,6 +90,7 @@ message RiegeliFooterMetadata {
     // protos are ArrayRecordFooter.
     ArrayRecordMetadata array_record_metadata = 1;
   }
+
   // Useful field for us to support append in the future.
   reserved "previous_metadata";
 }
@@ -102,5 +102,6 @@ message RiegeliFooterMetadata {
 message RiegeliPostscript {
   optional uint64 footer_offset = 1;
   optional uint64 magic = 2;
+
   reserved "footer_encoding";
 }
