@@ -142,5 +142,30 @@ class ArrayRecordModuleTest(absltest.TestCase):
         "group_size:42,transpose:false,pad_to_block_boundary:false,zstd:3,"
         "window_log:20,max_parallelism:1")
 
+  def test_write_read_with_file_options(self):
+    writer = ArrayRecordWriter(self.test_file, "", "priority:200")
+    test_strs = [b"abc", b"def", b"ghi"]
+    for s in test_strs:
+      writer.write(s)
+    writer.close()
+    reader = ArrayRecordReader(
+        self.test_file,
+        "readahead_buffer_size:0,max_parallelism:0",
+        None,
+        "priority:200",
+    )
+    num_strs = len(test_strs)
+    self.assertEqual(reader.num_records(), num_strs)
+    self.assertEqual(reader.record_index(), 0)
+    for gt in test_strs:
+      result = reader.read()
+      self.assertEqual(result, gt)
+    self.assertRaises(IndexError, reader.read)
+    reader.seek(0)
+    self.assertEqual(reader.record_index(), 0)
+    self.assertEqual(reader.read(), test_strs[0])
+    self.assertEqual(reader.record_index(), 1)
+
+
 if __name__ == "__main__":
   absltest.main()

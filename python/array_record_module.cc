@@ -22,12 +22,14 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "file/base/options.pb.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "cpp/array_record_reader.h"
 #include "cpp/array_record_writer.h"
 #include "cpp/thread_pool.h"
+#include "third_party/protobuf/text_format.h"
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/pytypes.h"
@@ -44,7 +46,8 @@ PYBIND11_MODULE(array_record_module, m) {
       array_record::ArrayRecordReader<std::unique_ptr<riegeli::Reader>>;
 
   py::class_<ArrayRecordWriter>(m, "ArrayRecordWriter")
-      .def(py::init([](const std::string& path, const std::string& options) {
+      .def(py::init([](const std::string& path, const std::string& options,
+                       const file::Options& file_options) {
              auto status_or_option =
                  array_record::ArrayRecordWriterBase::Options::FromString(
                      options);
@@ -66,7 +69,8 @@ PYBIND11_MODULE(array_record_module, m) {
              return ArrayRecordWriter(std::move(file_writer),
                                       status_or_option.value());
            }),
-           py::arg("path"), py::arg("options") = "")
+           py::arg("path"), py::arg("options") = "",
+           py::arg("file_options") = "")
       .def("ok", &ArrayRecordWriter::ok)
       .def("close",
            [](ArrayRecordWriter& writer) {
@@ -84,10 +88,10 @@ PYBIND11_MODULE(array_record_module, m) {
           throw std::runtime_error(std::string(writer.status().message()));
         }
       });
-
   py::class_<ArrayRecordReader>(m, "ArrayRecordReader")
       .def(py::init([](const std::string& path, const std::string& options,
-                       const std::optional<int64_t> file_reader_buffer_size) {
+                       const std::optional<int64_t> file_reader_buffer_size,
+                       const std::string& file_options_str) {
              auto status_or_option =
                  array_record::ArrayRecordReaderBase::Options::FromString(
                      options);
@@ -115,7 +119,8 @@ PYBIND11_MODULE(array_record_module, m) {
                                       array_record::ArrayRecordGlobalPool());
            }),
            py::arg("path"), py::arg("options") = "",
-           py::arg("file_reader_buffer_size") = std::nullopt, R"(
+           py::arg("file_reader_buffer_size") = std::nullopt,
+           py::arg("file_options_str") = "", R"(
            ArrayRecordReader for fast sequential or random access.
 
            Args:
@@ -124,6 +129,8 @@ PYBIND11_MODULE(array_record_module, m) {
                file_reader_buffer_size: Optional size of the buffer (in bytes)
                  for the underlying file (Riegeli) reader. The default buffer
                  size is 1 MiB.
+              file_options_str: Optional file::Options textproto to use for the underlying
+                 file (Riegeli) reader.
 
            options ::= option? ("," option?)*
            option ::=
