@@ -397,6 +397,13 @@ class ArrayRecordDataSource:
       h.update(p.encode())
     return f"ArrayRecordDataSource(hash_of_paths={h.hexdigest()})"
 
+  def __reduce__(self):
+    raise TypeError(
+        "ArrayRecordDataSource objects cannot be pickled because it often"
+        " holds references to file handles and other resources that are not"
+        " easily serializable."
+    )
+
 
 def _get_flag_value(flag: flags.FlagHolder[int]) -> int:
   """Retrieves the flag value or the default if run outside of absl."""
