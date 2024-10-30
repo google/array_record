@@ -142,5 +142,6 @@ class ArrayRecordModuleTest(absltest.TestCase):
         "group_size:42,transpose:false,pad_to_block_boundary:false,zstd:3,"
         "window_log:20,max_parallelism:1")
 
+
 if __name__ == "__main__":
   absltest.main()

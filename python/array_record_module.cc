@@ -52,6 +52,7 @@ PYBIND11_MODULE(array_record_module, m) {
                throw py::value_error(
                    std::string(status_or_option.status().message()));
              }
+
              std::unique_ptr<riegeli::FdWriter<>> file_writer;
              {
                py::gil_scoped_release scoped_release;
@@ -84,9 +85,8 @@ PYBIND11_MODULE(array_record_module, m) {
           throw std::runtime_error(std::string(writer.status().message()));
         }
       });
-
   py::class_<ArrayRecordReader>(m, "ArrayRecordReader")
-      .def(py::init([](const std::string& path, const std::string& options,
+        .def(py::init([](const std::string& path, const std::string& options,
                        const std::optional<int64_t> file_reader_buffer_size) {
              auto status_or_option =
                  array_record::ArrayRecordReaderBase::Options::FromString(
@@ -95,6 +95,7 @@ PYBIND11_MODULE(array_record_module, m) {
                throw py::value_error(
                    std::string(status_or_option.status().message()));
              }
+
              std::unique_ptr<riegeli::FdReader<>> file_reader;
              riegeli::FdReaderBase::Options file_reader_options;
              {
