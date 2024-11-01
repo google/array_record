@@ -1,6 +1,8 @@
 # ArrayRecord is a new file format for IO intensive applications.
 # It supports efficient random access and various compression algorithms.
 
+load("//third_party/protobuf/bazel:proto_library.bzl", "proto_library")
+
 package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])
