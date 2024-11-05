@@ -7,7 +7,7 @@ from apache_beam import io
 from apache_beam import transforms
 from apache_beam.coders import coders
 from apache_beam.io import filebasedsink
-from apache_beam.io.filesystem.CompressionTypes import AUTO
+from apache_beam.io.filesystem import CompressionTypes
 from array_record.python.array_record_module import ArrayRecordWriter
 
 
@@ -21,7 +21,7 @@ class _ArrayRecordSink(filebasedsink.FileBasedSink):
       num_shards=0,
       shard_name_template=None,
       coder=coders.ToBytesCoder(),
-      compression_type=AUTO):
+      compression_type=CompressionTypes.AUTO):
 
     super().__init__(
         file_path_prefix,
@@ -53,7 +53,7 @@ class WriteToArrayRecord(transforms.PTransform):
       num_shards=0,
       shard_name_template=None,
       coder=coders.ToBytesCoder(),
-      compression_type=AUTO):
+      compression_type=CompressionTypes.AUTO):
 
     self._sink = _ArrayRecordSink(
         file_path_prefix,
