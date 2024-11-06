@@ -29,21 +29,23 @@ def example_to_tfrecord(
   """
 
   p1 = beam.Pipeline(options=pipeline_options)
-  initial = (p1
-             | 'Create' >> beam.Create(example.generate_movie_examples())
-             | 'Write' >> beam.io.WriteToTFRecord(
-                 args['output'],
-                 coder=coders.ToBytesCoder(),
-                 num_shards=num_shards,
-                 file_name_suffix='.tfrecord'))
-
-  return p1, initial
+  _ = (
+      p1
+      | 'Create' >> beam.Create(example.generate_movie_examples())
+      | 'Write'
+      >> beam.io.WriteToTFRecord(
+          args['output'],
+          coder=coders.ToBytesCoder(),
+          num_shards=num_shards,
+          file_name_suffix='.tfrecord',
+      )
+  )
+  return p1
 
 
 def example_to_arrayrecord(
-    num_shards=1,
-    args=def_args,
-    pipeline_options=def_pipeline_options):
+    num_shards=1, args=def_args, pipeline_options=def_pipeline_options
+):
   """Beam pipeline for creating example ArrayRecord data.
 
   Args:
@@ -56,21 +58,23 @@ def example_to_arrayrecord(
   """
 
   p1 = beam.Pipeline(options=pipeline_options)
-  initial = (p1
-             | 'Create' >> beam.Create(example.generate_movie_examples())
-             | 'Write' >> arrayrecordio.WriteToArrayRecord(
-                 args['output'],
-                 coder=coders.ToBytesCoder(),
-                 num_shards=num_shards,
-                 file_name_suffix='.arrayrecord'))
-
-  return p1, initial
+  _ = (
+      p1
+      | 'Create' >> beam.Create(example.generate_movie_examples())
+      | 'Write'
+      >> arrayrecordio.WriteToArrayRecord(
+          args['output'],
+          coder=coders.ToBytesCoder(),
+          num_shards=num_shards,
+          file_name_suffix='.arrayrecord',
+      )
+  )
+  return p1
 
 
 def convert_tf_to_arrayrecord_disk(
-    num_shards=1,
-    args=def_args,
-    pipeline_options=def_pipeline_options):
+    num_shards=1, args=def_args, pipeline_options=def_pipeline_options
+):
   """Convert TFRecords to ArrayRecords using sink/sharding functionality.
 
   THIS ONLY WORKS FOR DISK ARRAYRECORD WRITES
@@ -85,20 +89,23 @@ def convert_tf_to_arrayrecord_disk(
   """
 
   p1 = beam.Pipeline(options=pipeline_options)
-  initial = (p1
-             | 'Read TFRecord' >> beam.io.ReadFromTFRecord(args['input'])
-             | 'Write ArrayRecord' >> arrayrecordio.WriteToArrayRecord(
-                 args['output'],
-                 coder=coders.ToBytesCoder(),
-                 num_shards=num_shards,
-                 file_name_suffix='.arrayrecord'))
-
-  return p1, initial
+  _ = (
+      p1
+      | 'Read TFRecord' >> beam.io.ReadFromTFRecord(args['input'])
+      | 'Write ArrayRecord'
+      >> arrayrecordio.WriteToArrayRecord(
+          args['output'],
+          coder=coders.ToBytesCoder(),
+          num_shards=num_shards,
+          file_name_suffix='.arrayrecord',
+      )
+  )
+  return p1
 
 
 def convert_tf_to_arrayrecord_disk_match_shards(
-    args=def_args,
-    pipeline_options=def_pipeline_options):
+    args=def_args, pipeline_options=def_pipeline_options
+):
   """Convert TFRecords to matching number of ArrayRecords.
 
   THIS ONLY WORKS FOR DISK ARRAYRECORD WRITES
@@ -112,23 +119,30 @@ def convert_tf_to_arrayrecord_disk_match_shards(
   """
 
   p1 = beam.Pipeline(options=pipeline_options)
-  initial = (p1
-             | 'Start' >> beam.Create([args['input']])
-             | 'Read' >> beam.io.ReadAllFromTFRecord(with_filename=True))
+  initial = (
+      p1
+      | 'Start' >> beam.Create([args['input']])
+      | 'Read' >> beam.io.ReadAllFromTFRecord(with_filename=True)
+  )
 
-  file_count = (initial
-                | 'Group' >> beam.GroupByKey()
-                | 'Count Shards' >> beam.combiners.Count.Globally())
+  file_count = (
+      initial
+      | 'Group' >> beam.GroupByKey()
+      | 'Count Shards' >> beam.combiners.Count.Globally()
+  )
 
-  write_files = (initial
-                 | 'Drop Filename' >> beam.Map(lambda x: x[1])
-                 | 'Write ArrayRecord' >> arrayrecordio.WriteToArrayRecord(
-                     args['output'],
-                     coder=coders.ToBytesCoder(),
-                     num_shards=beam.pvalue.AsSingleton(file_count),
-                     file_name_suffix='.arrayrecord'))
-
-  return p1, write_files
+  _ = (
+      initial
+      | 'Drop Filename' >> beam.Map(lambda x: x[1])
+      | 'Write ArrayRecord'
+      >> arrayrecordio.WriteToArrayRecord(
+          args['output'],
+          coder=coders.ToBytesCoder(),
+          num_shards=beam.pvalue.AsSingleton(file_count),
+          file_name_suffix='.arrayrecord',
+      )
+  )
+  return p1
 
 
 def convert_tf_to_arrayrecord_gcs(
@@ -149,14 +163,17 @@ def convert_tf_to_arrayrecord_gcs(
   """
 
   p1 = beam.Pipeline(options=pipeline_options)
-  initial = (p1
-             | 'Start' >> beam.Create([args['input']])
-             | 'Read' >> beam.io.ReadAllFromTFRecord(with_filename=True)
-             | 'Group' >> beam.GroupByKey()
-             | 'Write to ArrayRecord in GCS' >> beam.ParDo(
-                 dofns.ConvertToArrayRecordGCS(),
-                 args['output'],
-                 file_path_suffix=file_path_suffix,
-                 overwrite_extension=overwrite_extension))
-
-  return p1, initial
+  _ = (
+      p1
+      | 'Start' >> beam.Create([args['input']])
+      | 'Read' >> beam.io.ReadAllFromTFRecord(with_filename=True)
+      | 'Group' >> beam.GroupByKey()
+      | 'Write to ArrayRecord in GCS'
+      >> beam.ParDo(
+          dofns.ConvertToArrayRecordGCS(),
+          args['output'],
+          file_path_suffix=file_path_suffix,
+          overwrite_extension=overwrite_extension,
+      )
+  )
+  return p1

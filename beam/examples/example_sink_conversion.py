@@ -10,7 +10,8 @@ output_path = 'records/movies'
 
 args = {'input': input_pattern, 'output': output_path}
 
-## Set pipeline options and uncomment in main() to run in Dataflow
+## If run in Dataflow, set pipeline options and uncomment in main()
+## If run pipeline_options is not set, you will use a local runner
 pipeline_options = pipeline_options.PipelineOptions(
     runner='DataflowRunner',
     project='<YOUR_PROJECT>',
@@ -22,7 +23,7 @@ pipeline_options = pipeline_options.PipelineOptions(
 def main():
   convert_tf_to_arrayrecord_disk_match_shards(
       args=args,
-      # pipeline_options=pipeline_options
+      # pipeline_options=pipeline_options,
   ).run()
 
 if __name__ == '__main__':

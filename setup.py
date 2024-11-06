@@ -10,7 +10,7 @@ REQUIRED_PACKAGES = [
 ]
 
 BEAM_EXTRAS = [
-    'apache-beam[gcp]>=2.50.0',
+    'apache-beam[gcp]==2.53.0',
     'google-cloud-storage>=2.11.0',
     'tensorflow>=2.14.0'
 ]

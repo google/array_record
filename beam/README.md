@@ -1,5 +1,18 @@
 ## Apache Beam Integration for ArrayRecord
 
+### Quickstart
+
+#### Convert TFRecord in a GCS bucket to ArrayRecord
+```
+pip install array-record[beam]
+git clone https://github.com/google/array_record.git
+cd array_record/beam/examples
+# Fill in the required fields in example_gcs_conversion.py
+# If use DataFlow, set pipeline_options as instructed in example_gcs_conversion.py
+python example_gcs_conversion.py
+```
+If DataFlow is used, you can monitor the run from the DataFlow job monitoring UI (https://cloud.google.com/dataflow/docs/guides/monitoring-overview)
+
 ### Summary
 
 This submodule provides some Apache Beam components and lightweight pipelines for converting different file formats (TFRecord at present) into ArrayRecords. The intention is to provide a variety of fairly seamless tools for migrating existing TFRecord datasets, allowing a few different choices regarding sharding and write location.
