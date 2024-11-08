@@ -4,7 +4,10 @@
 
 #### Convert TFRecord in a GCS bucket to ArrayRecord
 ```
+pip install apache-beam[gcp]==2.53.0
 pip install array-record[beam]
+# check that apache-beam is still at 2.53.0
+pip show apache-beam
 git clone https://github.com/google/array_record.git
 cd array_record/beam/examples
 # Fill in the required fields in example_gcs_conversion.py
