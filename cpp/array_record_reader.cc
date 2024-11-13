@@ -41,8 +41,10 @@ limitations under the License.
 #include "cpp/parallel_for.h"
 #include "cpp/thread_pool.h"
 #include "third_party/protobuf/message_lite.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/base/object.h"
 #include "riegeli/base/options_parser.h"
+#include "riegeli/base/shared_ptr.h"
 #include "riegeli/base/status.h"
 #include "riegeli/bytes/reader.h"
 #include "riegeli/chunk_encoding/chunk.h"
@@ -168,12 +170,12 @@ ChunkDecoder ReadChunk(Reader& reader, size_t pos, size_t len) {
     decoder.Fail(reader.status());
     return decoder;
   }
-  MaskedReader masked_reader(reader.NewReader(pos), len);
+  MaskedReader masked_reader(*reader.NewReader(pos), len);
   if (!masked_reader.ok()) {
     decoder.Fail(masked_reader.status());
     return decoder;
   }
-  auto chunk_reader = riegeli::DefaultChunkReader<>(&masked_reader);
+  riegeli::DefaultChunkReader chunk_reader(&masked_reader);
   Chunk chunk;
   if (!chunk_reader.ReadChunk(chunk)) {
     decoder.Fail(chunk_reader.status());
@@ -343,15 +345,15 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         MaskedReader masked_reader(riegeli::kClosed);
         {
           AR_ENDO_SCOPE("MaskedReader");
-          masked_reader = MaskedReader(
-              reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
+          masked_reader.Reset(
+              *reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
              ++chunk_idx) {
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
           masked_reader.Seek(state_->chunk_offsets[chunk_idx]);
-          riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
+          riegeli::DefaultChunkReader chunk_reader(&masked_reader);
           Chunk chunk;
           if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
             return chunk_reader.status();
@@ -420,15 +422,15 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
         MaskedReader masked_reader(riegeli::kClosed);
         {
           AR_ENDO_SCOPE("MaskedReader");
-          masked_reader = MaskedReader(
-              reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
+          masked_reader.Reset(
+              *reader->NewReader(state_->chunk_offsets[chunk_idx_start]),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
              ++chunk_idx) {
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
           masked_reader.Seek(state_->chunk_offsets[chunk_idx]);
-          riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
+          riegeli::DefaultChunkReader chunk_reader(&masked_reader);
           Chunk chunk;
           if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
             return chunk_reader.status();
@@ -539,14 +541,14 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
         MaskedReader masked_reader(riegeli::kClosed);
         {
           AR_ENDO_SCOPE("MaskedReader");
-          masked_reader = MaskedReader(
-              reader->NewReader(state_->chunk_offsets[buffer_chunks[0]]),
+          masked_reader.Reset(
+              *reader->NewReader(state_->chunk_offsets[buffer_chunks[0]]),
               buf_len);
         }
         for (auto chunk_idx : buffer_chunks) {
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
           masked_reader.Seek(state_->chunk_offsets[chunk_idx]);
-          riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
+          riegeli::DefaultChunkReader chunk_reader(&masked_reader);
           Chunk chunk;
           if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
             return chunk_reader.status();
@@ -686,8 +688,8 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
     // movable, OSS ThreadPool only takes std::function which requires all the
     // captures to be copyable. Therefore we must wrap the promise in a
     // shared_ptr to copy it over to the scheduled task.
-    auto decoder_promise =
-        std::make_shared<std::promise<std::vector<ChunkDecoder>>>();
+    riegeli::SharedPtr decoder_promise(
+        riegeli::Maker<std::promise<std::vector<ChunkDecoder>>>());
     state_->future_decoders.push(
         {buffer_to_add, decoder_promise->get_future()});
     const auto reader = get_backing_reader();
@@ -719,8 +721,8 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
       MaskedReader masked_reader(riegeli::kClosed);
       {
         AR_ENDO_SCOPE("MaskedReader");
-        masked_reader =
-            MaskedReader(reader->NewReader(chunk_offsets.front()), buffer_len);
+        masked_reader.Reset(*reader->NewReader(chunk_offsets.front()),
+                            buffer_len);
       }
       if (!masked_reader.ok()) {
         for (auto& decoder : decoders) {
@@ -733,7 +735,7 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
         AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
         for (auto local_chunk_idx : IndicesOf(chunk_offsets)) {
           masked_reader.Seek(chunk_offsets[local_chunk_idx]);
-          auto chunk_reader = riegeli::DefaultChunkReader<>(&masked_reader);
+          riegeli::DefaultChunkReader chunk_reader(&masked_reader);
           Chunk chunk;
           if (!chunk_reader.ReadChunk(chunk)) {
             decoders[local_chunk_idx].Fail(chunk_reader.status());

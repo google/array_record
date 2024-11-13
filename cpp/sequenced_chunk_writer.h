@@ -122,7 +122,7 @@ class SequencedChunkWriterBase : public riegeli::Object {
   //
   // Example 2: concurrent access
   //
-  //     auto writer = std::make_shared<SequencedChunkWriter<>(...)
+  //     riegeli::SharedPtr writer(riegeli::Maker<SequencedChunkWriter(...));
   //
   //     pool->Schedule([writer,
   //                     chunk_promise = std::move(chunk_promise)]()  mutable {
@@ -201,8 +201,8 @@ class SequencedChunkWriterBase : public riegeli::Object {
 //
 //   // Step 1: open the writer with file backend.
 //   File* file = file::OpenOrDie(...);
-//   auto writer = std::make_shared<SequencedChunkWriter<riegeli::FileWriter<>>(
-//       riegeli::Maker(filename_or_file));
+//   riegeli::SharedPtr writer(riegeli::Maker<SequencedChunkWriter>(
+//       riegeli::Maker<riegeli::FileWriter>(filename_or_file)));
 //
 //   // Step 2: create a chunk encoding task.
 //   std::packaged_task<absl::StatusOr<riegeli::Chunk>()> encoding_task(
@@ -217,8 +217,8 @@ class SequencedChunkWriterBase : public riegeli::Object {
 //   // Step 4: Computes the encoding task in a thread pool.
 //   pool->Schedule([=,encoding_task=std::move(encoding_task)]() mutable {
 //     encoding_task();  // std::promise fulfilled.
-//     // shared_ptr pevents the writer to go out of scope, so it is safe to
-//     // invoke the method here.
+//     // riegeli::SharedPtr pevents the writer to go out of scope, so it is
+//     // safe to invoke the method here.
 //     writer->SubmitFutureChunks(false);
 //   });
 //
@@ -257,7 +257,7 @@ class SequencedChunkWriterBase : public riegeli::Object {
 //   SequencedChunkWriter writes_to_file(
 //       riegeli::Maker<riegeli::FileWriter>(filename_or_file));
 //
-// User may also use std::make_shared<...> or std::make_unique to construct the
+// User may also use riegeli::SharedPtr or std::make_unique to construct the
 // instance, as shown in the previous example.
 template <typename Dest = riegeli::Writer*>
 class SequencedChunkWriter : public SequencedChunkWriterBase {

@@ -20,18 +20,13 @@ limitations under the License.
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
-#include <functional>
 #include <limits>
-#include <type_traits>
-#include <utility>
 
-#include "absl/base/thread_annotations.h"
-#include "absl/functional/function_ref.h"
+#include "absl/base/optimization.h"
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 #include "cpp/common.h"
 #include "cpp/thread_pool.h"
-
 
 namespace array_record {
 
@@ -162,7 +157,7 @@ namespace parallel_for_internal {
 // ParallelForClosure - a single heap-allocated object that holds the loop's
 // state. The object will delete itself when the final task completes.
 template <size_t kItersPerBatch, typename SeqT, typename Function>
-  class ParallelForClosure {
+class ParallelForClosure {
  public:
   static constexpr bool kIsDynamicBatch = (kItersPerBatch == kDynamicBatchSize);
   ParallelForClosure(SeqT seq, Function func)
@@ -175,8 +170,8 @@ template <size_t kItersPerBatch, typename SeqT, typename Function>
     // Don't push more tasks to the pool than we have work for.  Also, if
     // parallelism is limited by desired_threads not thread pool size, subtract
     // 1 from the number of threads to push to account for the main thread.
-    size_t n_threads = std::min<size_t>(desired_threads - 1,
-                                        pool->NumThreads());
+    size_t n_threads =
+        std::min<size_t>(desired_threads - 1, pool->NumThreads());
 
     // Handle dynamic batch size.
     if (kIsDynamicBatch) {
@@ -287,7 +282,7 @@ inline void ParallelFor(SeqT seq, ARThreadPool* pool, Function func,
       opts.max_parallelism, DivRoundUp(*seq.end() - *seq.begin(),
                                        SeqT::Stride() * kMinItersPerBatch));
 
-    if (!pool || desired_threads <= 1) {
+  ) {
     for (size_t idx : seq) {
       func(idx);
     }

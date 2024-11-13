@@ -74,6 +74,7 @@ limitations under the License.
 #include "cpp/thread_pool.h"
 #include "riegeli/base/initializer.h"
 #include "riegeli/base/object.h"
+#include "riegeli/base/shared_ptr.h"
 #include "riegeli/bytes/writer.h"
 #include "riegeli/chunk_encoding/chunk_encoder.h"
 #include "riegeli/chunk_encoding/compressor_options.h"
@@ -326,7 +327,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
   void Done() override;
 
  private:
-  std::unique_ptr<riegeli::ChunkEncoder> CreateEncoder();
+  riegeli::SharedPtr<riegeli::ChunkEncoder> CreateEncoder();
   template <typename Record>
   bool WriteRecordImpl(Record&& record);
 
@@ -336,7 +337,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
 
   Options options_;
   ARThreadPool* pool_;
-  std::unique_ptr<riegeli::ChunkEncoder> chunk_encoder_;
+  riegeli::SharedPtr<riegeli::ChunkEncoder> chunk_encoder_;
   std::unique_ptr<SubmitChunkCallback> submit_chunk_callback_;
 };
 

@@ -40,8 +40,10 @@ limitations under the License.
 #include "cpp/sequenced_chunk_writer.h"
 #include "cpp/thread_pool.h"
 #include "third_party/protobuf/message_lite.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/base/object.h"
 #include "riegeli/base/options_parser.h"
+#include "riegeli/base/shared_ptr.h"
 #include "riegeli/base/status.h"
 #include "riegeli/bytes/chain_writer.h"
 #include "riegeli/chunk_encoding/chunk.h"
@@ -66,7 +68,7 @@ constexpr uint32_t kZstdDefaultWindowLog = 20;
 // Generated from `echo 'ArrayRecord' | md5sum | cut -b 1-16`
 constexpr uint64_t kMagic = 0x71930e704fdae05eULL;
 
-// zstd:3 gives a good trade-off for both the compression and decomopression
+// zstd:3 gives a good trade-off for both the compression and decompression
 // speed.
 constexpr char kArrayRecordDefaultCompression[] = "zstd:3";
 
@@ -169,7 +171,7 @@ ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
     return options_parser.status();
   }
   // From our benchmarks we figured zstd:3 gives the best trade-off for both the
-  // compression and decomopression speed.
+  // compression and decompression speed.
   if (text == "default" ||
       (!absl::StrContains(compressor_text, "uncompressed") &&
        !absl::StrContains(compressor_text, "brotli") &&
@@ -388,23 +390,28 @@ void ArrayRecordWriterBase::Done() {
   submit_chunk_callback_->WriteFooterAndPostscript(writer.get());
 }
 
-std::unique_ptr<riegeli::ChunkEncoder> ArrayRecordWriterBase::CreateEncoder() {
-  std::unique_ptr<riegeli::ChunkEncoder> encoder;
+riegeli::SharedPtr<riegeli::ChunkEncoder>
+ArrayRecordWriterBase::CreateEncoder() {
+  auto wrap_encoder =
+      [this](auto encoder) -> riegeli::SharedPtr<riegeli::ChunkEncoder> {
+    if (pool_) {
+      return riegeli::SharedPtr(
+          riegeli::Maker<riegeli::DeferredEncoder>(std::move(encoder)));
+    } else {
+      return riegeli::SharedPtr(std::move(encoder));
+    }
+  };
   if (options_.transpose()) {
-    encoder = std::make_unique<riegeli::TransposeEncoder>(
+    return wrap_encoder(riegeli::Maker<riegeli::TransposeEncoder>(
         options_.compressor_options(),
         riegeli::TransposeEncoder::TuningOptions().set_bucket_size(
-            options_.transpose_bucket_size()));
+            options_.transpose_bucket_size())));
   } else {
-    encoder = std::make_unique<riegeli::SimpleEncoder>(
+    return wrap_encoder(riegeli::Maker<riegeli::SimpleEncoder>(
         options_.compressor_options(),
         riegeli::SimpleEncoder::TuningOptions().set_size_hint(
-            submit_chunk_callback_->get_last_decoded_data_size()));
+            submit_chunk_callback_->get_last_decoded_data_size())));
   }
-  if (pool_) {
-    return std::make_unique<riegeli::DeferredEncoder>(std::move(encoder));
-  }
-  return encoder;
 }
 
 bool ArrayRecordWriterBase::WriteRecord(const google::protobuf::MessageLite& record) {
@@ -432,20 +439,18 @@ bool ArrayRecordWriterBase::WriteRecordImpl(Record&& record) {
   if (chunk_encoder_->num_records() >= options_.group_size()) {
     auto writer = get_writer();
     auto encoder = std::move(chunk_encoder_);
-    auto chunk_promise =
-        std::make_shared<std::promise<absl::StatusOr<Chunk>>>();
+    riegeli::SharedPtr chunk_promise(
+        riegeli::Maker<std::promise<absl::StatusOr<Chunk>>>());
     if (!writer->CommitFutureChunk(chunk_promise->get_future())) {
       Fail(writer->status());
       return false;
     }
     chunk_encoder_ = CreateEncoder();
     if (pool_ && options_.max_parallelism().value() > 1) {
-      std::shared_ptr<riegeli::ChunkEncoder> shared_encoder =
-          std::move(encoder);
       submit_chunk_callback_->TrackConcurrentChunkWriters();
-      pool_->Schedule([writer, shared_encoder, chunk_promise]() mutable {
+      pool_->Schedule([writer, encoder, chunk_promise]() mutable {
         AR_ENDO_TASK("Encode riegeli chunk");
-        chunk_promise->set_value(EncodeChunk(shared_encoder.get()));
+        chunk_promise->set_value(EncodeChunk(encoder.get()));
         writer->SubmitFutureChunks(false);
       });
       return true;

@@ -16,11 +16,12 @@ limitations under the License.
 #ifndef ARRAY_RECORD_CPP_MASKED_READER_H_
 #define ARRAY_RECORD_CPP_MASKED_READER_H_
 
+#include <cstddef>
 #include <memory>
-#include <string>
+#include <optional>
 
-#include "absl/types/optional.h"
 #include "riegeli/base/object.h"
+#include "riegeli/base/shared_buffer.h"
 #include "riegeli/base/types.h"
 #include "riegeli/bytes/reader.h"
 
@@ -47,10 +48,13 @@ class MaskedReader : public riegeli::Reader {
  public:
   explicit MaskedReader(riegeli::Closed) : riegeli::Reader(riegeli::kClosed) {}
 
-  MaskedReader(std::unique_ptr<riegeli::Reader> src_reader, size_t length);
+  MaskedReader(riegeli::Reader& src_reader, size_t length);
 
-  MaskedReader(MaskedReader &&other) noexcept;
-  MaskedReader &operator=(MaskedReader &&other) noexcept;
+  MaskedReader(MaskedReader&& other) = default;
+  MaskedReader& operator=(MaskedReader&& other) = default;
+
+  void Reset(riegeli::Closed);
+  void Reset(riegeli::Reader& src_reader, size_t length);
 
   bool SupportsRandomAccess() override { return true; }
   bool SupportsNewReader() override { return true; }
@@ -59,16 +63,18 @@ class MaskedReader : public riegeli::Reader {
   bool PullSlow(size_t min_length, size_t recommended_length) override;
   bool SeekSlow(riegeli::Position new_pos) override;
 
-  absl::optional<riegeli::Position> SizeImpl() override;
-  std::unique_ptr<riegeli::Reader>
-  NewReaderImpl(riegeli::Position initial_pos) override;
+  std::optional<riegeli::Position> SizeImpl() override;
+  std::unique_ptr<riegeli::Reader> NewReaderImpl(
+      riegeli::Position initial_pos) override;
 
  private:
   // Private constructor that copies itself.
-  MaskedReader(std::shared_ptr<std::string> buffer,
+  MaskedReader(riegeli::SharedBuffer buffer, size_t length,
                riegeli::Position limit_pos);
 
-  std::shared_ptr<std::string> buffer_;
+  void Initialize(riegeli::Reader& src_reader, size_t length);
+
+  riegeli::SharedBuffer buffer_;
 };
 
 }  // namespace array_record
