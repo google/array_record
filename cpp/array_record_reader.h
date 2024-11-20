@@ -378,8 +378,7 @@ template <typename Src>
 explicit ArrayRecordReader(
     Src&& src,
     ArrayRecordReaderBase::Options options = ArrayRecordReaderBase::Options(),
-    ARThreadPool* pool = nullptr)
-    -> ArrayRecordReader<riegeli::InitializerTargetT<Src>>;
+    ARThreadPool* pool = nullptr) -> ArrayRecordReader<riegeli::TargetT<Src>>;
 
 }  // namespace array_record
 

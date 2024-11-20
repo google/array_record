@@ -418,8 +418,7 @@ template <typename Dest>
 explicit ArrayRecordWriter(
     Dest&& dest,
     ArrayRecordWriterBase::Options options = ArrayRecordWriterBase::Options(),
-    ARThreadPool* pool = nullptr)
-    -> ArrayRecordWriter<riegeli::InitializerTargetT<Dest>>;
+    ARThreadPool* pool = nullptr) -> ArrayRecordWriter<riegeli::TargetT<Dest>>;
 
 }  // namespace array_record
 
