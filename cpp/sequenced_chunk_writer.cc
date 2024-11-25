@@ -149,7 +149,8 @@ void SequencedChunkWriterBase::Initialize() {
                            "Failed to create the file header"));
   }
   if (!chunk_writer->Flush(riegeli::FlushType::kFromObject)) {
-    Fail(riegeli::Annotate(chunk_writer->status(), "Could not flush"));
+    Fail(riegeli::Annotate(chunk_writer->status(),
+                           "Could not flush the file header."));
   }
 }
 
@@ -159,6 +160,11 @@ void SequencedChunkWriterBase::Done() {
     return;
   }
   auto* chunk_writer = get_writer();
+  // if (!chunk_writer->Flush(riegeli::FlushType::kFromObject)) {
+  //   Fail(riegeli::Annotate(chunk_writer->status(),
+  //                          "Could not flush before close."));
+  //   return;
+  // }
   if (!chunk_writer->Close()) {
     Fail(riegeli::Annotate(chunk_writer->status(),
                            "Failed to close chunk_writer"));
