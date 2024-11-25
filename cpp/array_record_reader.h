@@ -292,6 +292,8 @@ class ArrayRecordReaderBase : public riegeli::Object {
   ArrayRecordReaderBase& operator=(ArrayRecordReaderBase&& other) noexcept;
 
   void Initialize();
+  uint64_t ChunkStartOffset(uint64_t chunk_idx) const;
+  uint64_t ChunkEndOffset(uint64_t chunk_idx) const;
 
   virtual DependencyShare<riegeli::Reader*> get_backing_reader() const = 0;
 
