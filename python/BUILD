@@ -9,6 +9,7 @@ licenses(["notice"])
 pybind_extension(
     name = "array_record_module",
     srcs = ["array_record_module.cc"],
+    import_test = False,
     deps = [
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
