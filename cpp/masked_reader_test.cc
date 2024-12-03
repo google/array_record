@@ -29,7 +29,7 @@ TEST(MaskedReaderTest, SanityTest) {
   auto data = std::string("0123456789abcdef");
   auto base_reader = StringReader(data);
   // 56789abc
-  MaskedReader masked_reader1(*base_reader.NewReader(5), 8);
+  auto masked_reader1 = MaskedReader(base_reader.NewReader(5), 8);
   // Matches where we offset the reader.
   EXPECT_EQ(masked_reader1.pos(), 5);
   // Matches offset + mask length

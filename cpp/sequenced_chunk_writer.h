@@ -279,7 +279,7 @@ class SequencedChunkWriter : public SequencedChunkWriterBase {
 
 template <typename Dest>
 explicit SequencedChunkWriter(Dest&& dest)
-    -> SequencedChunkWriter<riegeli::TargetT<Dest>>;
+    -> SequencedChunkWriter<riegeli::InitializerTargetT<Dest>>;
 
 }  // namespace array_record
 

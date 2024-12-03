@@ -1,7 +1,7 @@
 # ArrayRecord is a new file format for IO intensive applications.
 # It supports efficient random access and various compression algorithms.
 
-load("//third_party/protobuf/bazel:proto_library.bzl", "proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -14,11 +14,6 @@ proto_library(
 
 cc_proto_library(
     name = "layout_cc_proto",
-    deps = [":layout_proto"],
-)
-
-go_proto_library(
-    name = "layout_go_proto",
     deps = [":layout_proto"],
 )
 
@@ -120,13 +115,13 @@ cc_library(
         ":sequenced_chunk_writer",
         ":shareable_dependency",
         ":thread_pool",
-        "//third_party/protobuf:protobuf_lite",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf_lite",
         "@com_google_riegeli//riegeli/base:initializer",
         "@com_google_riegeli//riegeli/base:object",
         "@com_google_riegeli//riegeli/base:options_parser",
@@ -152,8 +147,10 @@ cc_library(
     deps = [
         ":common",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:optional",
         "@com_google_riegeli//riegeli/base:object",
-        "@com_google_riegeli//riegeli/base:shared_buffer",
         "@com_google_riegeli//riegeli/base:status",
         "@com_google_riegeli//riegeli/base:types",
         "@com_google_riegeli//riegeli/bytes:reader",
@@ -171,7 +168,6 @@ cc_library(
         ":parallel_for",
         ":shareable_dependency",
         ":thread_pool",
-        "//third_party/protobuf:protobuf_lite",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/functional:function_ref",
@@ -180,6 +176,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf_lite",
         "@com_google_riegeli//riegeli/base:initializer",
         "@com_google_riegeli//riegeli/base:object",
         "@com_google_riegeli//riegeli/base:options_parser",

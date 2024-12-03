@@ -32,17 +32,15 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     package_data={'': ['*.so']},
-    python_requires='>=3.9',
+    python_requires='>=3.10',
     install_requires=REQUIRED_PACKAGES,
-    extras_require={
-        'beam': BEAM_EXTRAS
-    },
+    extras_require={'beam': BEAM_EXTRAS},
     url='https://github.com/google/array_record',
     license='Apache-2.0',
     classifiers=[
-        'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
     ],
     zip_safe=False,
     distclass=BinaryDistribution,

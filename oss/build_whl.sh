@@ -38,9 +38,7 @@ function main() {
     write_to_bazelrc "test --crosstool_top=${CROSSTOOL_TOP}"
   fi
 
-  # Using a previous version of Blaze to avoid:
-  # https://github.com/bazelbuild/bazel/issues/8622
-  export USE_BAZEL_VERSION=5.4.0
+  export USE_BAZEL_VERSION="${BAZEL_VERSION}"
   bazel clean
   bazel build ...
   bazel test --verbose_failures --test_output=errors ...

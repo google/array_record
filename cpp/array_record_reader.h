@@ -48,7 +48,7 @@ limitations under the License.
 #include "cpp/common.h"
 #include "cpp/shareable_dependency.h"
 #include "cpp/thread_pool.h"
-#include "third_party/protobuf/message_lite.h"
+#include "google/protobuf/message_lite.h"
 #include "riegeli/base/initializer.h"
 #include "riegeli/base/object.h"
 #include "riegeli/bytes/reader.h"
@@ -378,7 +378,8 @@ template <typename Src>
 explicit ArrayRecordReader(
     Src&& src,
     ArrayRecordReaderBase::Options options = ArrayRecordReaderBase::Options(),
-    ARThreadPool* pool = nullptr) -> ArrayRecordReader<riegeli::TargetT<Src>>;
+    ARThreadPool* pool = nullptr) ->
+ArrayRecordReader<riegeli::InitializerTargetT<Src>>;
 
 }  // namespace array_record
 

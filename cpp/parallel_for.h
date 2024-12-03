@@ -282,6 +282,19 @@ inline void ParallelFor(SeqT seq, ARThreadPool* pool, Function func,
       opts.max_parallelism, DivRoundUp(*seq.end() - *seq.begin(),
                                        SeqT::Stride() * kMinItersPerBatch));
 
+  // Unfortunately TF ThreadPool has no interface to monitor queue fullness
+  // Serialized vanilla for-loop for handling any of:
+  //
+  //  * No ThreadPool provided.
+  //
+  //  * ThreadPool has fallen very far behind.
+  //
+  //  * Small arrays w/ only 1 batch of work to do.
+  //
+  // Note that the compiler will inline this logic, making ParallelFor
+  // equivalent to a traditional C++ for-loop for the cases above.
+  if (pool == nullptr ||
+      desired_threads <= 1
   ) {
     for (size_t idx : seq) {
       func(idx);
