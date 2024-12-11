@@ -49,6 +49,9 @@ function install_and_init_pyenv {
   if [[ ! -d $PYENV_ROOT ]]; then
     echo "Installing pyenv.."
     git clone https://github.com/pyenv/pyenv.git "$PYENV_ROOT"
+    pushd "$PYENV_ROOT"
+    git checkout "v2.4.21"
+    popd
     export PATH="/home/kbuilder/.local/bin:$PYENV_ROOT/bin:$PATH"
     eval "$(pyenv init --path)"
   fi
@@ -56,17 +59,16 @@ function install_and_init_pyenv {
   echo "Python setup..."
   pyenv install -s "$PYENV_PYTHON_VERSION"
   pyenv global "$PYENV_PYTHON_VERSION"
-  PYTHON=$(pyenv which python)
+  export PYTHON_BIN=$(pyenv which python)
 }
 
-function setup_env_vars_py310 {
+function setup_env_vars_py {
   # This controls the python binary to use.
-  PYTHON=python3.10
-  PYTHON_STR=python3.10
-  PYTHON_MAJOR_VERSION=3
-  PYTHON_MINOR_VERSION=10
+  PYTHON_MAJOR_VERSION=$1
+  PYTHON_MINOR_VERSION=$2
   # This is for pyenv install.
-  PYENV_PYTHON_VERSION=3.10.13
+  PYENV_PYTHON_VERSION=${PYTHON_MAJOR_VERSION}.${PYTHON_MINOR_VERSION}
+  PYTHON="python$PYENV_PYTHON_VERSION"
 }
 
 function update_bazel_macos {
@@ -78,7 +80,17 @@ function update_bazel_macos {
   ./bazel-${BAZEL_VERSION}-installer-darwin-${ARCH}.sh --user
   rm -f ./bazel-${BAZEL_VERSION}-installer-darwin-${ARCH}.sh
   # Add new bazel installation to path
-  PATH="/Users/kbuilder/bin:$PATH"
+  export PATH="/Users/kbuilder/bin:$PATH"
+}
+
+function install_ar_deps {
+  $PYTHON_BIN -m pip install -U \
+    absl-py \
+    build \
+    etils[epath] \
+    setuptools \
+    twine \
+    wheel;
 }
 
 function build_and_test_array_record_macos() {
@@ -90,13 +102,19 @@ function build_and_test_array_record_macos() {
   update_bazel_macos ${BAZEL_VERSION}
   bazel --version
 
-  # Set up Pyenv.
-  setup_env_vars_py310
-  install_and_init_pyenv
+  PYTHON_MAJOR_VERSION=3
+  for PYTHON_MINOR_VERSION in 10 11 12
+  do
+    # Set up Pyenv.
+    PYTHON_VERSION=${PYTHON_MAJOR_VERSION}.${PYTHON_MINOR_VERSION}
+    echo "Creating array_record wheel for Python Version $PYTHON_VERSION"
+    setup_env_vars_py $PYTHON_MAJOR_VERSION $PYTHON_MINOR_VERSION
+    install_and_init_pyenv
+    install_ar_deps
 
-  # Build and test ArrayRecord.
-  cd ${SOURCE_DIR}
-  bash ${SOURCE_DIR}/oss/build_whl.sh
+    # Build and test ArrayRecord.
+    bash ${SOURCE_DIR}/oss/build_whl.sh
+  done
 
   ls ${SOURCE_DIR}/all_dist/*.whl
 }

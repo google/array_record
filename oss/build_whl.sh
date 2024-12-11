@@ -29,9 +29,12 @@ function main() {
   write_to_bazelrc "build -c opt"
   write_to_bazelrc "build --cxxopt=-std=c++17"
   write_to_bazelrc "build --host_cxxopt=-std=c++17"
-  write_to_bazelrc "build --linkopt=\"-lrt -lm\""
   write_to_bazelrc "build --experimental_repo_remote_exec"
   write_to_bazelrc "build --python_path=\"${PYTHON_BIN}\""
+  PLATFORM="$(uname)"
+  if [[ "$PLATFORM" != "Darwin" ]]; then
+    write_to_bazelrc "build --linkopt=\"-lrt -lm\""
+  fi
 
   if [ -n "${CROSSTOOL_TOP}" ]; then
     write_to_bazelrc "build --crosstool_top=${CROSSTOOL_TOP}"
@@ -40,8 +43,8 @@ function main() {
 
   export USE_BAZEL_VERSION="${BAZEL_VERSION}"
   bazel clean
-  bazel build ...
-  bazel test --verbose_failures --test_output=errors ...
+  bazel build ... --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
+  bazel test --verbose_failures --test_output=errors ... --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
 
   DEST="/tmp/array_record/all_dist"
   # Create the directory, then do dirname on a non-existent file inside it to

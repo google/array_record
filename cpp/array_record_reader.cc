@@ -70,10 +70,10 @@ using riegeli::OptionsParser;
 using riegeli::Reader;
 using riegeli::ValueParser;
 
-template <class T>
-T CeilOfRatio(T x, T d) {
-  return (x + d - 1) / d;
-}
+// template <class T>
+uint64_t CeilOfRatio(uint64_t x, uint64_t d) { return (x + d - 1) / d; }
+
+uint64_t min(uint64_t a, uint64_t b) { return (a < b) ? a : b; }
 
 absl::StatusOr<ArrayRecordReaderBase::Options>
 ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
@@ -192,7 +192,7 @@ void ArrayRecordReaderBase::Initialize() {
     max_parallelism = state_->pool->NumThreads();
     if (state_->options.max_parallelism().has_value()) {
       max_parallelism =
-          std::min(max_parallelism, state_->options.max_parallelism().value());
+          min(max_parallelism, state_->options.max_parallelism().value());
     }
   }
   state_->options.set_max_parallelism(max_parallelism);
@@ -332,8 +332,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         uint64_t chunk_idx_start = buf_idx * state_->chunk_group_size;
         // inclusive index, not the conventional exclusive index.
         uint64_t last_chunk_idx =
-            std::min((buf_idx + 1) * state_->chunk_group_size - 1,
-                     state_->chunk_offsets.size() - 1);
+            min((buf_idx + 1) * state_->chunk_group_size - 1,
+                state_->chunk_offsets.size() - 1);
         uint64_t buf_len = state_->ChunkEndOffset(last_chunk_idx) -
                            state_->chunk_offsets[chunk_idx_start];
         AR_ENDO_JOB(
@@ -408,9 +408,9 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
         uint64_t chunk_idx_start =
             chunk_idx_begin + buf_idx * state_->chunk_group_size;
         // inclusive index, not the conventional exclusive index.
-        uint64_t last_chunk_idx = std::min(
-            chunk_idx_begin + (buf_idx + 1) * state_->chunk_group_size - 1,
-            chunk_idx_end - 1);
+        uint64_t last_chunk_idx =
+            min(chunk_idx_begin + (buf_idx + 1) * state_->chunk_group_size - 1,
+                chunk_idx_end - 1);
         uint64_t buf_len = state_->ChunkEndOffset(last_chunk_idx) -
                            state_->chunk_offsets[chunk_idx_start];
         AR_ENDO_JOB(
@@ -604,7 +604,7 @@ bool ArrayRecordReaderBase::SeekRecord(uint64_t record_index) {
   if (!ok()) {
     return false;
   }
-  state_->record_idx = std::min(record_index, state_->num_records);
+  state_->record_idx = min(record_index, state_->num_records);
   return true;
 }
 
@@ -654,8 +654,8 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
     std::vector<ChunkDecoder> decoders;
     decoders.reserve(state_->chunk_group_size);
     uint64_t chunk_start = buffer_idx * state_->chunk_group_size;
-    uint64_t chunk_end = std::min(state_->chunk_offsets.size(),
-                                  (buffer_idx + 1) * state_->chunk_group_size);
+    uint64_t chunk_end = min(state_->chunk_offsets.size(),
+                             (buffer_idx + 1) * state_->chunk_group_size);
     const auto reader = get_backing_reader();
     for (uint64_t chunk_idx = chunk_start; chunk_idx < chunk_end; ++chunk_idx) {
       uint64_t chunk_offset = state_->chunk_offsets[chunk_idx];
@@ -694,9 +694,8 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
     std::vector<uint64_t> chunk_offsets;
     chunk_offsets.reserve(state_->chunk_group_size);
     uint64_t chunk_start = buffer_to_add * state_->chunk_group_size;
-    uint64_t chunk_end =
-        std::min(state_->chunk_offsets.size(),
-                 (buffer_to_add + 1) * state_->chunk_group_size);
+    uint64_t chunk_end = min(state_->chunk_offsets.size(),
+                             (buffer_to_add + 1) * state_->chunk_group_size);
     for (uint64_t chunk_idx = chunk_start; chunk_idx < chunk_end; ++chunk_idx) {
       chunk_offsets.push_back(state_->chunk_offsets[chunk_idx]);
     }
