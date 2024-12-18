@@ -46,7 +46,7 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "cpp/common.h"
-#include "cpp/shareable_dependency.h"
+#include "cpp/tri_state_ptr.h"
 #include "cpp/thread_pool.h"
 #include "google/protobuf/message_lite.h"
 #include "riegeli/base/initializer.h"
@@ -293,7 +293,8 @@ class ArrayRecordReaderBase : public riegeli::Object {
 
   void Initialize();
 
-  virtual DependencyShare<riegeli::Reader*> get_backing_reader() const = 0;
+  virtual TriStatePtr<riegeli::Reader>::SharedRef get_backing_reader()
+      const = 0;
 
  private:
   bool ReadAheadFromBuffer(uint64_t buffer_idx);
@@ -344,13 +345,14 @@ class ArrayRecordReader : public ArrayRecordReaderBase {
                              Options options = Options(),
                              ARThreadPool* pool = nullptr)
       : ArrayRecordReaderBase(std::move(options), pool),
-        main_reader_(std::move(src)) {
-    auto& unique = main_reader_.WaitUntilUnique();
-    if (!unique->ok()) {
-      Fail(unique->status());
+        main_reader_(
+            std::make_unique<TriStatePtr<riegeli::Reader>>(std::move(src))) {
+    auto reader = get_backing_reader();
+    if (!reader->ok()) {
+      Fail(reader->status());
       return;
     }
-    if (!unique->SupportsNewReader()) {
+    if (!reader->SupportsNewReader()) {
       Fail(InvalidArgumentError(
           "ArrayRecordReader only work on inputs with random access support."));
       return;
@@ -359,19 +361,18 @@ class ArrayRecordReader : public ArrayRecordReaderBase {
   }
 
  protected:
-  DependencyShare<riegeli::Reader*> get_backing_reader() const override {
-    return main_reader_.Share();
+  TriStatePtr<riegeli::Reader>::SharedRef get_backing_reader() const override {
+    return main_reader_->MakeShared();
   }
 
   void Done() override {
-    auto& unique = main_reader_.WaitUntilUnique();
-    if (unique.IsOwning()) {
-      if (!unique->Close()) Fail(unique->status());
-    }
+    if (main_reader_ == nullptr) return;
+    auto unique = main_reader_->WaitAndMakeUnique();
+    if (!unique->Close()) Fail(unique->status());
   }
 
  private:
-  ShareableDependency<riegeli::Reader*, Src> main_reader_;
+  std::unique_ptr<TriStatePtr<riegeli::Reader>> main_reader_;
 };
 
 template <typename Src>

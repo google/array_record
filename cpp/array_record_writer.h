@@ -70,7 +70,7 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/sequenced_chunk_writer.h"
-#include "cpp/shareable_dependency.h"
+#include "cpp/tri_state_ptr.h"
 #include "cpp/thread_pool.h"
 #include "riegeli/base/initializer.h"
 #include "riegeli/base/object.h"
@@ -317,7 +317,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
   ArrayRecordWriterBase(ArrayRecordWriterBase&& other) noexcept;
   ArrayRecordWriterBase& operator=(ArrayRecordWriterBase&& other) noexcept;
 
-  virtual DependencyShare<SequencedChunkWriterBase*> get_writer() = 0;
+  virtual TriStatePtr<SequencedChunkWriterBase>::SharedRef get_writer() = 0;
 
   // Initializes and validates the underlying writer states.
   void Initialize();
@@ -380,37 +380,34 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
                              Options options = Options(),
                              ARThreadPool* pool = nullptr)
       : ArrayRecordWriterBase(std::move(options), pool),
-        main_writer_(
-            std::make_unique<SequencedChunkWriter<Dest>>(std::move(dest))) {
-    auto& unique = main_writer_.WaitUntilUnique();
-    if (!unique->ok()) {
-      Fail(unique->status());
+        main_writer_(std::make_unique<TriStatePtr<SequencedChunkWriterBase>>(
+            std::make_unique<SequencedChunkWriter<Dest>>(std::move(dest)))) {
+    auto writer = get_writer();
+    if (!writer->ok()) {
+      Fail(writer->status());
       return;
     }
     Initialize();
   }
 
  protected:
-  DependencyShare<SequencedChunkWriterBase*> get_writer() final {
-    return main_writer_.Share();
+  TriStatePtr<SequencedChunkWriterBase>::SharedRef get_writer() final {
+    return main_writer_->MakeShared();
   }
 
   void Done() override {
-    // WaitUntilUnique ensures all pending tasks are finished.
-    auto& unique = main_writer_.WaitUntilUnique();
+    if (main_writer_ == nullptr) return;
     ArrayRecordWriterBase::Done();
     if (!ok()) {
       return;
     }
-    if (unique.IsOwning()) {
-      if (!unique->Close()) Fail(unique->status());
-    }
+    // Ensures all pending tasks are finished.
+    auto unique = main_writer_->WaitAndMakeUnique();
+    if (!unique->Close()) Fail(unique->status());
   }
 
  private:
-  ShareableDependency<SequencedChunkWriterBase*,
-                      std::unique_ptr<SequencedChunkWriter<Dest>>>
-      main_writer_;
+  std::unique_ptr<TriStatePtr<SequencedChunkWriterBase>> main_writer_;
 };
 
 template <typename Dest>

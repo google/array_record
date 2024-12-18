@@ -28,6 +28,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/base/thread_annotations.h"
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
@@ -38,6 +39,7 @@ limitations under the License.
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
 #include "cpp/sequenced_chunk_writer.h"
+#include "cpp/tri_state_ptr.h"
 #include "cpp/thread_pool.h"
 #include "google/protobuf/message_lite.h"
 #include "riegeli/base/object.h"
@@ -262,7 +264,8 @@ class ArrayRecordWriterBase::SubmitChunkCallback
   }
 
   // Aggregate the offsets information and write it to the file.
-  void WriteFooterAndPostscript(SequencedChunkWriterBase* writer);
+  void WriteFooterAndPostscript(
+      TriStatePtr<SequencedChunkWriterBase>::SharedRef writer);
 
  private:
   const Options options_;
@@ -385,7 +388,7 @@ void ArrayRecordWriterBase::Done() {
     }
     chunk_promise.set_value(EncodeChunk(chunk_encoder_.get()));
   }
-  submit_chunk_callback_->WriteFooterAndPostscript(writer.get());
+  submit_chunk_callback_->WriteFooterAndPostscript(std::move(writer));
 }
 
 std::unique_ptr<riegeli::ChunkEncoder> ArrayRecordWriterBase::CreateEncoder() {
@@ -486,7 +489,7 @@ void ArrayRecordWriterBase::SubmitChunkCallback::operator()(
 }
 
 void ArrayRecordWriterBase::SubmitChunkCallback::WriteFooterAndPostscript(
-    SequencedChunkWriterBase* writer) {
+    TriStatePtr<SequencedChunkWriterBase>::SharedRef writer) {
   // Flushes prior chunks
   writer->SubmitFutureChunks(true);
   // Footer and postscript must pad to block boundary

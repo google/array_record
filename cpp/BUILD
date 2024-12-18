@@ -72,17 +72,12 @@ cc_library(
 )
 
 cc_library(
-    name = "shareable_dependency",
-    hdrs = ["shareable_dependency.h"],
+    name = "tri_state_ptr",
+    hdrs = ["tri_state_ptr.h"],
     deps = [
+        ":common",
         "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/synchronization",
-        "@com_google_riegeli//riegeli/base:initializer",
-        "@com_google_riegeli//riegeli/base:shared_ptr",
-        "@com_google_riegeli//riegeli/base:stable_dependency",
-        "@com_google_riegeli//riegeli/base:type_traits",
     ],
 )
 
@@ -113,9 +108,10 @@ cc_library(
         ":common",
         ":layout_cc_proto",
         ":sequenced_chunk_writer",
-        ":shareable_dependency",
         ":thread_pool",
+        ":tri_state_ptr",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -125,7 +121,6 @@ cc_library(
         "@com_google_riegeli//riegeli/base:initializer",
         "@com_google_riegeli//riegeli/base:object",
         "@com_google_riegeli//riegeli/base:options_parser",
-        "@com_google_riegeli//riegeli/base:shared_ptr",
         "@com_google_riegeli//riegeli/base:status",
         "@com_google_riegeli//riegeli/bytes:chain_writer",
         "@com_google_riegeli//riegeli/bytes:writer",
@@ -166,8 +161,8 @@ cc_library(
         ":layout_cc_proto",
         ":masked_reader",
         ":parallel_for",
-        ":shareable_dependency",
         ":thread_pool",
+        ":tri_state_ptr",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/functional:function_ref",
@@ -180,7 +175,6 @@ cc_library(
         "@com_google_riegeli//riegeli/base:initializer",
         "@com_google_riegeli//riegeli/base:object",
         "@com_google_riegeli//riegeli/base:options_parser",
-        "@com_google_riegeli//riegeli/base:shared_ptr",
         "@com_google_riegeli//riegeli/base:status",
         "@com_google_riegeli//riegeli/bytes:reader",
         "@com_google_riegeli//riegeli/chunk_encoding:chunk",
@@ -217,12 +211,12 @@ cc_test(
 )
 
 cc_test(
-    name = "shareable_dependency_test",
-    srcs = ["shareable_dependency_test.cc"],
+    name = "tri_state_ptr_test",
+    srcs = ["tri_state_ptr_test.cc"],
     deps = [
         ":common",
-        ":shareable_dependency",
         ":thread_pool",
+        ":tri_state_ptr",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
         "@com_google_googletest//:gtest_main",
