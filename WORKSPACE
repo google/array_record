@@ -32,7 +32,6 @@ http_archive(
 # GoogleTest/GoogleMock framework. Used by most unit-tests.
 http_archive(
     name = "com_google_googletest",
-    sha256 = "24e06e79a78ca5794ec6ad2bf0a1f05515cd1d05a9e10d9a6dc853078b2f3914",
     strip_prefix = "googletest-main",
     urls = ["https://github.com/google/googletest/archive/main.zip"],
 )
