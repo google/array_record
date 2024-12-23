@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "cpp/tri_state_ptr.h"
+#include <memory>
 
 #include "gtest/gtest.h"
 #include "absl/synchronization/notification.h"
@@ -53,9 +54,9 @@ class TriStatePtrTest : public testing::Test {
   ARThreadPool* pool_;
 };
 
-TEST_F(TriStatePtrTest, SanityTest) {
-  TriStatePtr<FooBase> foo_main(riegeli::Maker<Foo>(1).UniquePtr());
-  EXPECT_EQ(foo_main.state(), TriStatePtr<FooBase>::State::kNoRef);
+TEST_F(TriStatePtrTest, SanityTestMaker) {
+  TriStatePtr<FooBase, Foo> foo_main(riegeli::Maker<Foo>(1));
+  EXPECT_EQ(foo_main.state(), TriStatePtrBase<FooBase>::State::kNoRef);
   absl::Notification notification;
   {
     pool_->Schedule(
@@ -67,12 +68,35 @@ TEST_F(TriStatePtrTest, SanityTest) {
           EXPECT_EQ(second_foo_shared->value(), 2);
         });
   }
-  EXPECT_EQ(foo_main.state(), TriStatePtr<FooBase>::State::kSharing);
+  EXPECT_EQ(foo_main.state(), TriStatePtrBase<FooBase>::State::kSharing);
   notification.Notify();
   auto foo_unique = foo_main.WaitAndMakeUnique();
   foo_unique->mul_value(3);
   EXPECT_EQ(foo_unique->value(), 6);
-  EXPECT_EQ(foo_main.state(), TriStatePtr<FooBase>::State::kUnique);
+  EXPECT_EQ(foo_main.state(), TriStatePtrBase<FooBase>::State::kUnique);
+}
+
+TEST_F(TriStatePtrTest, SanityTestUniquePtr) {
+  TriStatePtr<FooBase, std::unique_ptr<FooBase>> foo_main(
+      std::make_unique<Foo>(1));
+  EXPECT_EQ(foo_main.state(), TriStatePtrBase<FooBase>::State::kNoRef);
+  absl::Notification notification;
+  {
+    pool_->Schedule(
+        [foo_shared = foo_main.MakeShared(), &notification]() mutable {
+          notification.WaitForNotification();
+          EXPECT_EQ(foo_shared->value(), 1);
+          const auto second_foo_shared = foo_shared;
+          foo_shared->add_value(1);
+          EXPECT_EQ(second_foo_shared->value(), 2);
+        });
+  }
+  EXPECT_EQ(foo_main.state(), TriStatePtrBase<FooBase>::State::kSharing);
+  notification.Notify();
+  auto foo_unique = foo_main.WaitAndMakeUnique();
+  foo_unique->mul_value(3);
+  EXPECT_EQ(foo_unique->value(), 6);
+  EXPECT_EQ(foo_main.state(), TriStatePtrBase<FooBase>::State::kUnique);
 }
 
 }  // namespace

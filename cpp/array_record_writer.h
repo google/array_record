@@ -317,7 +317,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
   ArrayRecordWriterBase(ArrayRecordWriterBase&& other) noexcept;
   ArrayRecordWriterBase& operator=(ArrayRecordWriterBase&& other) noexcept;
 
-  virtual TriStatePtr<SequencedChunkWriterBase>::SharedRef get_writer() = 0;
+  virtual TriStatePtrBase<SequencedChunkWriterBase>::SharedRef get_writer() = 0;
 
   // Initializes and validates the underlying writer states.
   void Initialize();
@@ -380,8 +380,9 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
                              Options options = Options(),
                              ARThreadPool* pool = nullptr)
       : ArrayRecordWriterBase(std::move(options), pool),
-        main_writer_(std::make_unique<TriStatePtr<SequencedChunkWriterBase>>(
-            std::make_unique<SequencedChunkWriter<Dest>>(std::move(dest)))) {
+        main_writer_(std::make_unique<TriStatePtr<SequencedChunkWriterBase,
+                                                  SequencedChunkWriter<Dest>>>(
+            riegeli::Maker<SequencedChunkWriter<Dest>>(std::move(dest)))) {
     auto writer = get_writer();
     if (!writer->ok()) {
       Fail(writer->status());
@@ -391,11 +392,12 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
   }
 
  protected:
-  TriStatePtr<SequencedChunkWriterBase>::SharedRef get_writer() final {
+  TriStatePtrBase<SequencedChunkWriterBase>::SharedRef get_writer() final {
     return main_writer_->MakeShared();
   }
 
   void Done() override {
+    // TODO add an empty checking method?
     if (main_writer_ == nullptr) return;
     ArrayRecordWriterBase::Done();
     if (!ok()) {
@@ -407,7 +409,9 @@ class ArrayRecordWriter : public ArrayRecordWriterBase {
   }
 
  private:
-  std::unique_ptr<TriStatePtr<SequencedChunkWriterBase>> main_writer_;
+  std::unique_ptr<
+      TriStatePtr<SequencedChunkWriterBase, SequencedChunkWriter<Dest>>>
+      main_writer_;
 };
 
 template <typename Dest>

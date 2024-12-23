@@ -265,7 +265,7 @@ class ArrayRecordWriterBase::SubmitChunkCallback
 
   // Aggregate the offsets information and write it to the file.
   void WriteFooterAndPostscript(
-      TriStatePtr<SequencedChunkWriterBase>::SharedRef writer);
+      TriStatePtrBase<SequencedChunkWriterBase>::SharedRef writer);
 
  private:
   const Options options_;
@@ -489,7 +489,7 @@ void ArrayRecordWriterBase::SubmitChunkCallback::operator()(
 }
 
 void ArrayRecordWriterBase::SubmitChunkCallback::WriteFooterAndPostscript(
-    TriStatePtr<SequencedChunkWriterBase>::SharedRef writer) {
+    TriStatePtrBase<SequencedChunkWriterBase>::SharedRef writer) {
   // Flushes prior chunks
   writer->SubmitFutureChunks(true);
   // Footer and postscript must pad to block boundary

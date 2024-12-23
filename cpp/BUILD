@@ -77,7 +77,10 @@ cc_library(
     deps = [
         ":common",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/synchronization",
+        "@com_google_riegeli//riegeli/base:dependency",
+        "@com_google_riegeli//riegeli/base:initializer",
     ],
 )
 

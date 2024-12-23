@@ -32,6 +32,7 @@ limitations under the License.
 #ifndef ARRAY_RECORD_CPP_ARRAY_RECORD_READER_H_
 #define ARRAY_RECORD_CPP_ARRAY_RECORD_READER_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -46,8 +47,8 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "cpp/common.h"
-#include "cpp/tri_state_ptr.h"
 #include "cpp/thread_pool.h"
+#include "cpp/tri_state_ptr.h"
 #include "google/protobuf/message_lite.h"
 #include "riegeli/base/initializer.h"
 #include "riegeli/base/object.h"
@@ -293,7 +294,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
 
   void Initialize();
 
-  virtual TriStatePtr<riegeli::Reader>::SharedRef get_backing_reader()
+  virtual TriStatePtrBase<riegeli::Reader>::SharedRef get_backing_reader()
       const = 0;
 
  private:
@@ -345,24 +346,27 @@ class ArrayRecordReader : public ArrayRecordReaderBase {
                              Options options = Options(),
                              ARThreadPool* pool = nullptr)
       : ArrayRecordReaderBase(std::move(options), pool),
-        main_reader_(std::make_unique<TriStatePtr<riegeli::Reader>>(
+        main_reader_(std::make_unique<TriStatePtr<riegeli::Reader, Src>>(
             std::move(src))) {
     Initialize();
   }
 
  protected:
-  TriStatePtr<riegeli::Reader>::SharedRef get_backing_reader() const override {
+  TriStatePtrBase<riegeli::Reader>::SharedRef get_backing_reader()
+      const override {
     return main_reader_->MakeShared();
   }
 
   void Done() override {
-    if (main_reader_ == nullptr) return;
+    if (main_reader_ == nullptr) {
+      return;
+    }
     auto unique = main_reader_->WaitAndMakeUnique();
     if (!unique->Close()) Fail(unique->status());
   }
 
  private:
-  std::unique_ptr<TriStatePtr<riegeli::Reader>> main_reader_;
+  std::unique_ptr<TriStatePtr<riegeli::Reader, Src>> main_reader_;
 };
 
 template <typename Src>

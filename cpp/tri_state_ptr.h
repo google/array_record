@@ -20,76 +20,35 @@ limitations under the License.
 
 #include <atomic>
 #include <cstdint>
-#include <memory>
 #include <utility>
 
+#include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/synchronization/mutex.h"
 #include "cpp/common.h"
+#include "riegeli/base/dependency.h"
+#include "riegeli/base/initializer.h"
 
 namespace array_record {
 
-/** TriStatePtr is a wrapper around a pointer that allows for a unique and
- * shared reference.
- *
- * There are three states:
- *
- * - NoRef: The object does not have shared or unique references.
- * - Sharing: The object is shared.
- * - Unique: The object is referenced by a unique pointer wrapper.
- *
- * The state transition from NoRef to Shared when MakeShared is called.
- * An internal refernce count is incremented when a SharedRef is created.
- *
- *      SharedRef ref = MakeShared();           --
- * NoRef ----------------------------> Sharing /  | MakeShared()
- *         All SharedRef deallocated           <--
- *       <----------------------------
- *
- * The state can also transition to Unique when WaitAndMakeUnique is called.
- * We can only hold one unique reference at a time.
- *
- *      UniqueRef ref = WaitAndMakeUnique();
- * NoRef ----------------------------> Unique
- *         The UniqueRef is deallocated
- *       <----------------------------
- *
- * Other than the state transition above, state transitions methods would block
- * until the specified state is possible. On deallocation, the destructor blocks
- * until the state is NoRef.
- *
- * Example usage:
- *
- *   TriStatePtr<FooBase, Foo> main(riegeli::Maker(...));
- *   // Create a shared reference to work on other threads.
- *   pool->Schedule([refobj = foo_ptr.MakeShared()] {
- *     refobj->FooMethod();
- *   });
- *
- *   // Blocks until refobj is out of scope.
- *   auto unique_ref = main.WaitAndMakeUnique();
- *   unique_ref->CleanupFoo();
- *
- */
 template <typename BaseT>
-class TriStatePtr {
+class TriStatePtrBase {
  public:
-  DECLARE_IMMOBILE_CLASS(TriStatePtr);
-  TriStatePtr() = default;
+  // TriStatePtrBase(BaseT* ptr) : ptr_(ptr) {
+  //   if (ptr == nullptr)
+  //   LOG(FATAL) << "ptr is null";
+  // }
 
-  ~TriStatePtr() {
+  ~TriStatePtrBase() {
     absl::MutexLock l(&mu_);
     mu_.Await(absl::Condition(
         +[](State* sharing_state) { return *sharing_state == State::kNoRef; },
         &state_));
   }
 
-  // explicit TriStatePtr(std::unique_ptr<BaseT> ptr) : ptr_(std::move(ptr)) {}
-  explicit TriStatePtr(std::unique_ptr<BaseT> ptr) : ptr_(std::move(ptr)) {}
-
   class SharedRef {
    public:
-    SharedRef(TriStatePtr<BaseT>* parent) : parent_(parent) {}
+    SharedRef(TriStatePtrBase<BaseT>* parent) : parent_(parent) {}
 
     SharedRef(const SharedRef& other) : parent_(other.parent_) {
       parent_->ref_count_++;
@@ -121,32 +80,32 @@ class TriStatePtr {
       }
     }
 
-    const BaseT& operator*() const { return *parent_->ptr_.get(); }
-    const BaseT* operator->() const { return parent_->ptr_.get(); }
-    BaseT& operator*() { return *parent_->ptr_.get(); }
-    BaseT* operator->() { return parent_->ptr_.get(); }
+    const BaseT& operator*() const { return *parent_->ptr_; }
+    const BaseT* operator->() const { return parent_->ptr_; }
+    BaseT& operator*() { return *parent_->ptr_; }
+    BaseT* operator->() { return parent_->ptr_; }
 
    private:
-    TriStatePtr<BaseT>* parent_ = nullptr;
+    TriStatePtrBase<BaseT>* parent_ = nullptr;
   };
 
   class UniqueRef {
    public:
     DECLARE_MOVE_ONLY_CLASS(UniqueRef);
-    UniqueRef(TriStatePtr<BaseT>* parent) : parent_(parent) {}
+    UniqueRef(TriStatePtrBase<BaseT>* parent) : parent_(parent) {}
 
     ~UniqueRef() {
       absl::MutexLock l(&parent_->mu_);
       parent_->state_ = State::kNoRef;
     }
 
-    const BaseT& operator*() const { return *parent_->ptr_.get(); }
-    const BaseT* operator->() const { return parent_->ptr_.get(); }
-    BaseT& operator*() { return *parent_->ptr_.get(); }
-    BaseT* operator->() { return parent_->ptr_.get(); }
+    const BaseT& operator*() const { return *parent_->ptr_; }
+    const BaseT* operator->() const { return parent_->ptr_; }
+    BaseT& operator*() { return *parent_->ptr_; }
+    BaseT* operator->() { return parent_->ptr_; }
 
    private:
-    TriStatePtr<BaseT>* parent_;
+    TriStatePtrBase<BaseT>* parent_;
   };
 
   SharedRef MakeShared() {
@@ -179,11 +138,72 @@ class TriStatePtr {
     return state_;
   }
 
+ protected:
+  BaseT* ptr_;
+
  private:
   mutable absl::Mutex mu_;
   std::atomic_int32_t ref_count_ = 0;
   State state_ ABSL_GUARDED_BY(mu_) = State::kNoRef;
-  std::unique_ptr<BaseT> ptr_;
+};
+
+/** TriStatePtr is a wrapper around a pointer that allows for a unique and
+ * shared reference.
+ *
+ * There are three states:
+ *
+ * - NoRef: The object does not have shared or unique references.
+ * - Sharing: The object is shared.
+ * - Unique: The object is referenced by a unique pointer wrapper.
+ *
+ * The state transition from NoRef to Shared when MakeShared is called.
+ * An internal refernce count is incremented when a SharedRef is created.
+ *
+ *      SharedRef ref = MakeShared();           --
+ * NoRef ----------------------------> Sharing /  | MakeShared()
+ *         All SharedRef deallocated           <--
+ *       <----------------------------
+ *
+ * The state can also transition to Unique when WaitAndMakeUnique is called.
+ * We can only hold one unique reference at a time.
+ *
+ *      UniqueRef ref = WaitAndMakeUnique();
+ * NoRef ----------------------------> Unique
+ *         The UniqueRef is deallocated
+ *       <----------------------------
+ *
+ * Other than the state transition above, state transitions methods would block
+ * until the specified state is possible. On deallocation, the destructor blocks
+ * until the state is NoRef.
+ *
+ * Example usage 1 (using rieglie::Maker):
+ *
+ *   TriStatePtr<FooBase, Foo> main(riegeli::Maker(...));
+ *   // Create a shared reference to work on other threads.
+ *   pool->Schedule([refobj = foo_ptr.MakeShared()] {
+ *     refobj->FooMethod();
+ *   });
+ *
+ *   // Blocks until refobj is out of scope.
+ *   auto unique_ref = main.WaitAndMakeUnique();
+ *   unique_ref->CleanupFoo();
+ * 
+ * Example usage 2 (using unique_ptr):
+ *
+ *   TriStatePtr<FooBase, std::unique_ptr<FooBase>> main(
+ *       std::make_unique<Foo>(...));
+ */
+template <typename BaseT, typename T>
+class TriStatePtr : public TriStatePtrBase<BaseT> {
+ public:
+  explicit TriStatePtr(riegeli::Initializer<T> base)
+      : dependency_(std::move(base)) {
+    absl::Nonnull<BaseT*> ptr = dependency_.get();
+    TriStatePtrBase<BaseT>::ptr_ = ptr;
+  }
+
+ private:
+  riegeli::Dependency<BaseT*, T> dependency_;
 };
 
 }  // namespace array_record
