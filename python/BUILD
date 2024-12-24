@@ -1,7 +1,6 @@
 # Python binding for ArrayRecord
 
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
-load("@pypi//:requirements.bzl", "requirement")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -36,7 +35,7 @@ py_library(
     srcs = ["array_record_data_source.py"],
     data = [":array_record_module.so"],
     deps = [
-        requirement("etils"),
+        # Implicit etils (/epath) dependency.
     ],
 )
 

@@ -18,8 +18,8 @@ import os
 
 from absl.testing import absltest
 
-from python.array_record_module import ArrayRecordReader
-from python.array_record_module import ArrayRecordWriter
+from array_record.python.array_record_module import ArrayRecordReader
+from array_record.python.array_record_module import ArrayRecordWriter
 
 
 class ArrayRecordModuleTest(absltest.TestCase):

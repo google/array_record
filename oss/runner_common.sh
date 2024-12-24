@@ -11,7 +11,7 @@ function build_and_test_array_record_linux() {
 
   # Using a previous version of Blaze to avoid:
   # https://github.com/bazelbuild/bazel/issues/8622
-  export BAZEL_VERSION="8.0.0"
+  export BAZEL_VERSION="5.4.0"
 
   # Build wheels for multiple Python minor versions.
   PYTHON_MAJOR_VERSION=3
@@ -86,7 +86,7 @@ function build_and_test_array_record_macos() {
   # Set up Bazel.
   # Using a previous version of Bazel to avoid:
   # https://github.com/bazelbuild/bazel/issues/8622
-  export BAZEL_VERSION="8.0.0"
+  export BAZEL_VERSION="5.4.0"
   update_bazel_macos ${BAZEL_VERSION}
   bazel --version
 

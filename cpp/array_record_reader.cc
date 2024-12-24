@@ -342,8 +342,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         uint64_t chunk_idx_start = buf_idx * state_->chunk_group_size;
         // inclusive index, not the conventional exclusive index.
         uint64_t last_chunk_idx =
-            std::min<uint64_t>((buf_idx + 1) * state_->chunk_group_size - 1,
-                               state_->chunk_offsets.size() - 1);
+            std::min((buf_idx + 1) * state_->chunk_group_size - 1,
+                     state_->chunk_offsets.size() - 1);
         uint64_t buf_len = state_->ChunkEndOffset(last_chunk_idx) -
                            state_->chunk_offsets[chunk_idx_start];
         AR_ENDO_JOB(
@@ -708,8 +708,8 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
     chunk_offsets.reserve(state_->chunk_group_size);
     uint64_t chunk_start = buffer_to_add * state_->chunk_group_size;
     uint64_t chunk_end =
-        std::min<uint64_t>(state_->chunk_offsets.size(),
-                           (buffer_to_add + 1) * state_->chunk_group_size);
+        std::min(state_->chunk_offsets.size(),
+                 (buffer_to_add + 1) * state_->chunk_group_size);
     for (uint64_t chunk_idx = chunk_start; chunk_idx < chunk_end; ++chunk_idx) {
       chunk_offsets.push_back(state_->chunk_offsets[chunk_idx]);
     }
