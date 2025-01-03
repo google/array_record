@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "cpp/tri_state_ptr.h"
+#include <utility>
 
 #include "gtest/gtest.h"
 #include "absl/synchronization/notification.h"
@@ -54,7 +55,7 @@ class TriStatePtrTest : public testing::Test {
 };
 
 TEST_F(TriStatePtrTest, SanityTest) {
-  TriStatePtr<FooBase> foo_main(riegeli::Maker<Foo>(1).UniquePtr());
+  TriStatePtr<FooBase> foo_main(std::move(riegeli::Maker<Foo>(1)));
   EXPECT_EQ(foo_main.state(), TriStatePtr<FooBase>::State::kNoRef);
   absl::Notification notification;
   {

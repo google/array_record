@@ -16,11 +16,8 @@ limitations under the License.
 #include <stddef.h>
 #include <stdint.h>
 
-#include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -33,99 +30,83 @@ limitations under the License.
 #include "pybind11/pybind11.h"
 #include "pybind11/pytypes.h"
 #include "pybind11/stl.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/bytes/fd_reader.h"
 #include "riegeli/bytes/fd_writer.h"
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(array_record_module, m) {
-  using ArrayRecordWriter =
-      array_record::ArrayRecordWriter<std::unique_ptr<riegeli::Writer>>;
-  using ArrayRecordReader =
-      array_record::ArrayRecordReader<std::unique_ptr<riegeli::Reader>>;
+  using array_record::ArrayRecordReaderBase;
+  using array_record::ArrayRecordWriterBase;
 
-  py::class_<ArrayRecordWriter>(m, "ArrayRecordWriter")
-      .def(py::init([](const std::string& path, const std::string& options) {
+  py::class_<ArrayRecordWriterBase>(m, "ArrayRecordWriter")
+      .def(py::init([](const std::string& path, const std::string& options,
+                       const py::kwargs& kwargs) -> ArrayRecordWriterBase* {
              auto status_or_option =
-                 array_record::ArrayRecordWriterBase::Options::FromString(
-                     options);
+                 ArrayRecordWriterBase::Options::FromString(options);
              if (!status_or_option.ok()) {
                throw py::value_error(
                    std::string(status_or_option.status().message()));
              }
-
-             std::unique_ptr<riegeli::FdWriter<>> file_writer;
-             {
-               py::gil_scoped_release scoped_release;
-               file_writer = std::make_unique<riegeli::FdWriter<>>(path);
-             }
-
-             if (!file_writer->ok()) {
-               throw std::runtime_error(
-                   std::string(file_writer->status().message()));
-             }
+             // Release the GIL because IO is time consuming.
              py::gil_scoped_release scoped_release;
-             return ArrayRecordWriter(std::move(file_writer),
-                                      status_or_option.value());
+             return new array_record::ArrayRecordWriter(
+                 riegeli::Maker<riegeli::FdWriter>(path),
+                 status_or_option.value());
            }),
            py::arg("path"), py::arg("options") = "")
-      .def("ok", &ArrayRecordWriter::ok)
+      .def("ok", &ArrayRecordWriterBase::ok)
       .def("close",
-           [](ArrayRecordWriter& writer) {
+           [](ArrayRecordWriterBase& writer) {
              if (!writer.Close()) {
                throw std::runtime_error(std::string(writer.status().message()));
              }
            })
-      .def("is_open", &ArrayRecordWriter::is_open)
+      .def("is_open", &ArrayRecordWriterBase::is_open)
       // We accept only py::bytes (and not unicode strings) since we expect
       // most users to store binary data (e.g. serialized protocol buffers).
       // We cannot know if a users wants to write+read unicode and forcing users
       // to encode() their unicode strings avoids accidental conversions.
-      .def("write", [](ArrayRecordWriter& writer, py::bytes record) {
+      .def("write", [](ArrayRecordWriterBase& writer, py::bytes record) {
         if (!writer.WriteRecord(record)) {
           throw std::runtime_error(std::string(writer.status().message()));
         }
       });
-  py::class_<ArrayRecordReader>(m, "ArrayRecordReader")
-        .def(py::init([](const std::string& path, const std::string& options,
-                       const std::optional<int64_t> file_reader_buffer_size) {
+  py::class_<ArrayRecordReaderBase>(m, "ArrayRecordReader")
+      .def(py::init([](const std::string& path, const std::string& options,
+                       const py::kwargs& kwargs) -> ArrayRecordReaderBase* {
              auto status_or_option =
-                 array_record::ArrayRecordReaderBase::Options::FromString(
-                     options);
+                 ArrayRecordReaderBase::Options::FromString(options);
              if (!status_or_option.ok()) {
                throw py::value_error(
                    std::string(status_or_option.status().message()));
              }
-
-             std::unique_ptr<riegeli::FdReader<>> file_reader;
              riegeli::FdReaderBase::Options file_reader_options;
-             {
-               py::gil_scoped_release scoped_release;
-               if (file_reader_buffer_size.has_value()) {
-                 file_reader_options.set_buffer_size(*file_reader_buffer_size);
-               }
-               file_reader = std::make_unique<riegeli::FdReader<>>(
-                   path, file_reader_options);
+             if (kwargs.contains("file_reader_buffer_size")) {
+               auto file_reader_buffer_size =
+                   kwargs["file_reader_buffer_size"].cast<int64_t>();
+               file_reader_options.set_buffer_size(file_reader_buffer_size);
              }
-             if (!file_reader->ok()) {
-               throw std::runtime_error(
-                   std::string(file_reader->status().message()));
-             }
+             // Release the GIL because IO is time consuming.
              py::gil_scoped_release scoped_release;
-             return ArrayRecordReader(std::move(file_reader),
-                                      status_or_option.value(),
-                                      array_record::ArrayRecordGlobalPool());
+             return new array_record::ArrayRecordReader(
+                 riegeli::Maker<riegeli::FdReader>(path, file_reader_options),
+                 status_or_option.value(),
+                 array_record::ArrayRecordGlobalPool());
            }),
-           py::arg("path"), py::arg("options") = "",
-           py::arg("file_reader_buffer_size") = std::nullopt, R"(
+           py::arg("path"), py::arg("options") = "", R"(
            ArrayRecordReader for fast sequential or random access.
 
            Args:
                path: File path to the input file.
                options: String with options for ArrayRecord. See syntax below.
+           Kwargs:
                file_reader_buffer_size: Optional size of the buffer (in bytes)
                  for the underlying file (Riegeli) reader. The default buffer
                  size is 1 MiB.
+               file_options: Optional file::Options to use for the underlying
+                 file (Riegeli) reader.
 
            options ::= option? ("," option?)*
            option ::=
@@ -143,26 +124,26 @@ PYBIND11_MODULE(array_record_module, m) {
            the random access performance, set the options to
            "readahead_buffer_size:0,max_parallelism:0".
            )")
-      .def("ok", &ArrayRecordReader::ok)
+      .def("ok", &ArrayRecordReaderBase::ok)
       .def("close",
-           [](ArrayRecordReader& reader) {
+           [](ArrayRecordReaderBase& reader) {
              if (!reader.Close()) {
                throw std::runtime_error(std::string(reader.status().message()));
              }
            })
-      .def("is_open", &ArrayRecordReader::is_open)
-      .def("num_records", &ArrayRecordReader::NumRecords)
-      .def("record_index", &ArrayRecordReader::RecordIndex)
-      .def("writer_options_string", &ArrayRecordReader::WriterOptionsString)
+      .def("is_open", &ArrayRecordReaderBase::is_open)
+      .def("num_records", &ArrayRecordReaderBase::NumRecords)
+      .def("record_index", &ArrayRecordReaderBase::RecordIndex)
+      .def("writer_options_string", &ArrayRecordReaderBase::WriterOptionsString)
       .def("seek",
-           [](ArrayRecordReader& reader, int64_t record_index) {
+           [](ArrayRecordReaderBase& reader, int64_t record_index) {
              if (!reader.SeekRecord(record_index)) {
                throw std::runtime_error(std::string(reader.status().message()));
              }
            })
       // See write() for why this returns py::bytes.
       .def("read",
-           [](ArrayRecordReader& reader) {
+           [](ArrayRecordReaderBase& reader) {
              absl::string_view string_view;
              if (!reader.ReadRecord(&string_view)) {
                if (reader.ok()) {
@@ -174,7 +155,7 @@ PYBIND11_MODULE(array_record_module, m) {
              return py::bytes(string_view);
            })
       .def("read",
-           [](ArrayRecordReader& reader, std::vector<uint64_t> indices) {
+           [](ArrayRecordReaderBase& reader, std::vector<uint64_t> indices) {
              std::vector<std::string> staging(indices.size());
              py::list output(indices.size());
              {
@@ -190,6 +171,8 @@ PYBIND11_MODULE(array_record_module, m) {
                  throw std::runtime_error(std::string(status.message()));
                }
              }
+             // TODO(fchern): Can we write the data directly to the output
+             // list in our Parallel loop?
              ssize_t index = 0;
              for (const auto& record : staging) {
                auto py_record = py::bytes(record);
@@ -199,7 +182,7 @@ PYBIND11_MODULE(array_record_module, m) {
              return output;
            })
       .def("read",
-           [](ArrayRecordReader& reader, int32_t begin, int32_t end) {
+           [](ArrayRecordReaderBase& reader, int32_t begin, int32_t end) {
              int32_t range_begin = begin, range_end = end;
              if (range_begin < 0) {
                range_begin = reader.NumRecords() + range_begin;
@@ -230,6 +213,8 @@ PYBIND11_MODULE(array_record_module, m) {
                  throw std::runtime_error(std::string(status.message()));
                }
              }
+             // TODO(fchern): Can we write the data directly to the output
+             // list in our Parallel loop?
              ssize_t index = 0;
              for (const auto& record : staging) {
                auto py_record = py::bytes(record);
@@ -238,7 +223,7 @@ PYBIND11_MODULE(array_record_module, m) {
              }
              return output;
            })
-      .def("read_all", [](ArrayRecordReader& reader) {
+      .def("read_all", [](ArrayRecordReaderBase& reader) {
         std::vector<std::string> staging(reader.NumRecords());
         py::list output(reader.NumRecords());
         {
@@ -253,6 +238,8 @@ PYBIND11_MODULE(array_record_module, m) {
             throw std::runtime_error(std::string(status.message()));
           }
         }
+        // TODO(fchern): Can we write the data directly to the output
+        // list in our Parallel loop?
         ssize_t index = 0;
         for (const auto& record : staging) {
           auto py_record = py::bytes(record);

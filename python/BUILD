@@ -1,6 +1,7 @@
 # Python binding for ArrayRecord
 
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@pypi//:requirements.bzl", "requirement")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -10,14 +11,15 @@ pybind_extension(
     name = "array_record_module",
     srcs = ["array_record_module.cc"],
     deps = [
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/strings:str_format",
         "//cpp:array_record_reader",
         "//cpp:array_record_writer",
         "//cpp:thread_pool",
-        "@com_google_riegeli//riegeli/bytes:fd_reader",
-        "@com_google_riegeli//riegeli/bytes:fd_writer",
+        "@riegeli//riegeli/base:initializer",
+        "@riegeli//riegeli/bytes:fd_reader",
+        "@riegeli//riegeli/bytes:fd_writer",
     ],
 )
 
@@ -26,7 +28,7 @@ py_test(
     srcs = ["array_record_module_test.py"],
     data = [":array_record_module.so"],
     deps = [
-        "@com_google_absl_py//absl/testing:absltest",
+        "@abseil-py//absl/testing:absltest",
     ],
 )
 
@@ -35,7 +37,7 @@ py_library(
     srcs = ["array_record_data_source.py"],
     data = [":array_record_module.so"],
     deps = [
-        # Implicit etils (/epath) dependency.
+        requirement("etils"),
     ],
 )
 
@@ -50,8 +52,8 @@ py_test(
     ],
     deps = [
         ":array_record_data_source",
-        "@com_google_absl_py//absl/testing:absltest",
-        "@com_google_absl_py//absl/testing:flagsaver",
-        "@com_google_absl_py//absl/testing:parameterized",
+        "@abseil-py//absl/testing:absltest",
+        "@abseil-py//absl/testing:flagsaver",
+        "@abseil-py//absl/testing:parameterized",
     ],
 )

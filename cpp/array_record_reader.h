@@ -58,6 +58,8 @@ namespace array_record {
 // template independent part of ArrayRecordReader
 class ArrayRecordReaderBase : public riegeli::Object {
  public:
+  ~ArrayRecordReaderBase() override;
+
   class Options {
    public:
     Options() {}
@@ -285,7 +287,6 @@ class ArrayRecordReaderBase : public riegeli::Object {
 
  protected:
   explicit ArrayRecordReaderBase(Options options, ARThreadPool* pool);
-  ~ArrayRecordReaderBase() override;
 
   // Move only. Closes `other` on move.
   ArrayRecordReaderBase(ArrayRecordReaderBase&& other) noexcept;
@@ -369,8 +370,7 @@ template <typename Src>
 explicit ArrayRecordReader(
     Src&& src,
     ArrayRecordReaderBase::Options options = ArrayRecordReaderBase::Options(),
-    ARThreadPool* pool = nullptr) ->
-ArrayRecordReader<riegeli::InitializerTargetT<Src>>;
+    ARThreadPool* pool = nullptr) -> ArrayRecordReader<riegeli::TargetT<Src>>;
 
 }  // namespace array_record
 

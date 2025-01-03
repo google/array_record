@@ -85,6 +85,8 @@ namespace array_record {
 // Template parameter independent part of `ArrayRecordWriter`.
 class ArrayRecordWriterBase : public riegeli::Object {
  public:
+  ~ArrayRecordWriterBase() override;
+
   class Options {
    public:
     Options();
@@ -311,7 +313,6 @@ class ArrayRecordWriterBase : public riegeli::Object {
 
  protected:
   ArrayRecordWriterBase(Options options, ARThreadPool* pool);
-  ~ArrayRecordWriterBase() override;
 
   // Move only, but we need to override the default for closing the rvalues.
   ArrayRecordWriterBase(ArrayRecordWriterBase&& other) noexcept;
@@ -414,8 +415,7 @@ template <typename Dest>
 explicit ArrayRecordWriter(
     Dest&& dest,
     ArrayRecordWriterBase::Options options = ArrayRecordWriterBase::Options(),
-    ARThreadPool* pool = nullptr) ->
-ArrayRecordWriter<riegeli::InitializerTargetT<Dest>>;
+    ARThreadPool* pool = nullptr) -> ArrayRecordWriter<riegeli::TargetT<Dest>>;
 
 }  // namespace array_record
 

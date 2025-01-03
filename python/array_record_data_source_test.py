@@ -24,8 +24,8 @@ from absl.testing import absltest
 from absl.testing import flagsaver
 from absl.testing import parameterized
 
-from array_record.python import array_record_data_source
-from array_record.python import array_record_module
+from python import array_record_data_source
+from python import array_record_module
 
 
 FLAGS = flags.FLAGS
