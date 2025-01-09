@@ -84,7 +84,6 @@ class TriStatePtr {
         &state_));
   }
 
-  // explicit TriStatePtr(std::unique_ptr<BaseT> ptr) : ptr_(std::move(ptr)) {}
   explicit TriStatePtr(std::unique_ptr<BaseT> ptr) : ptr_(std::move(ptr)) {}
 
   class SharedRef {
@@ -95,24 +94,12 @@ class TriStatePtr {
       parent_->ref_count_++;
     }
     SharedRef& operator=(const SharedRef& other) {
-      this->parent_ = other.parent_;
-      this->parent_->ref_count_++;
-      return *this;
-    }
-
-    SharedRef(SharedRef&& other) : parent_(other.parent_) {
-      other.parent_ = nullptr;
-    }
-    SharedRef& operator=(SharedRef&& other) {
-      this->parent_ = other.parent_;
-      other.parent_ = nullptr;
+      parent_ = other.parent_;
+      parent_->ref_count_++;
       return *this;
     }
 
     ~SharedRef() {
-      if (parent_ == nullptr) {
-        return;
-      }
       int32_t ref_count =
           parent_->ref_count_.fetch_sub(1, std::memory_order_acq_rel) - 1;
       if (ref_count == 0) {
