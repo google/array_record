@@ -25,6 +25,8 @@ limitations under the License.
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "absl/strings/cord.h"
+#include "absl/strings/cord_test_helpers.h"
 #include "absl/strings/string_view.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
@@ -110,6 +112,39 @@ TEST_P(ArrayRecordWriterTest, MoveTest) {
   auto reader =
       riegeli::RecordReader(riegeli::Maker<riegeli::StringReader>(encoded));
   for (const auto& expected : test_str) {
+    std::string result;
+    reader.ReadRecord(result);
+    EXPECT_EQ(result, expected);
+  }
+}
+
+TEST_P(ArrayRecordWriterTest, CordTest) {
+  std::string encoded;
+  ARThreadPool* pool = nullptr;
+  if (std::get<3>(GetParam())) {
+    pool = ArrayRecordGlobalPool();
+  }
+  auto options = GetOptions();
+  options.set_group_size(2);
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), options, pool);
+
+  absl::Cord flat_cord("test");
+  // Empty string should not crash the writer.
+  absl::Cord empty_cord("");
+  absl::Cord fragmented_cord = absl::MakeFragmentedCord({"aaa ", "", "c"});
+
+  EXPECT_TRUE(writer.WriteRecord(flat_cord));
+  EXPECT_TRUE(writer.WriteRecord(empty_cord));
+  EXPECT_TRUE(writer.WriteRecord(fragmented_cord));
+  ASSERT_TRUE(writer.Close());
+
+  // Empty string should not crash the reader.
+  std::vector<std::string> expected_strings{"test", "", "aaa c"};
+
+  auto reader =
+      riegeli::RecordReader(riegeli::Maker<riegeli::StringReader>(encoded));
+  for (const auto& expected : expected_strings) {
     std::string result;
     reader.ReadRecord(result);
     EXPECT_EQ(result, expected);

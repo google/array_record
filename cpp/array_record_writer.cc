@@ -31,6 +31,7 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/cord.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -39,8 +40,8 @@ limitations under the License.
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
 #include "cpp/sequenced_chunk_writer.h"
-#include "cpp/tri_state_ptr.h"
 #include "cpp/thread_pool.h"
+#include "cpp/tri_state_ptr.h"
 #include "google/protobuf/message_lite.h"
 #include "riegeli/base/object.h"
 #include "riegeli/base/options_parser.h"
@@ -416,6 +417,16 @@ bool ArrayRecordWriterBase::WriteRecord(const google::protobuf::MessageLite& rec
 
 bool ArrayRecordWriterBase::WriteRecord(absl::string_view record) {
   return WriteRecordImpl(std::move(record));
+}
+
+bool ArrayRecordWriterBase::WriteRecord(const absl::Cord& record) {
+  if (auto flat = record.TryFlat(); flat.has_value()) {
+    return WriteRecord(*flat);
+  }
+
+  std::string cord_string;
+  absl::AppendCordToString(record, &cord_string);
+  return WriteRecord(cord_string);
 }
 
 bool ArrayRecordWriterBase::WriteRecord(const void* data, size_t num_bytes) {

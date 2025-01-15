@@ -66,12 +66,13 @@ limitations under the License.
 #include <utility>
 
 #include "absl/status/statusor.h"
+#include "absl/strings/cord.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/sequenced_chunk_writer.h"
-#include "cpp/tri_state_ptr.h"
 #include "cpp/thread_pool.h"
+#include "cpp/tri_state_ptr.h"
 #include "riegeli/base/initializer.h"
 #include "riegeli/base/object.h"
 #include "riegeli/bytes/writer.h"
@@ -304,6 +305,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
   // Write records of various types.
   bool WriteRecord(const google::protobuf::MessageLite& record);
   bool WriteRecord(absl::string_view record);
+  bool WriteRecord(const absl::Cord& record);
   bool WriteRecord(const void* data, size_t num_bytes);
   template <typename T>
   bool WriteRecord(absl::Span<const T> record) {
