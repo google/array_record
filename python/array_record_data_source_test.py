@@ -51,15 +51,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     writer.write(b"foobar")
     writer.close()
     reader = array_record_module.ArrayRecordReader(filename)
-    with self.assertLogs(level="ERROR") as log_output:
-      array_record_data_source._check_group_size(filename, reader)
-    self.assertRegex(
-        log_output.output[0],
-        (
-            r"File .* was created with group size 65536. Grain requires group"
-            r" size 1 for good performance"
-        ),
-    )
+    self.assertRegex(reader.writer_options_string(), r"group_size:1")
 
   def test_check_valid_group_size(self):
     filename = os.path.join(FLAGS.test_tmpdir, "test.array_record")
