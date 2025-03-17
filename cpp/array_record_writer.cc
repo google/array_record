@@ -69,7 +69,7 @@ constexpr uint32_t kZstdDefaultWindowLog = 20;
 // Generated from `echo 'ArrayRecord' | md5sum | cut -b 1-16`
 constexpr uint64_t kMagic = 0x71930e704fdae05eULL;
 
-// zstd:3 gives a good trade-off for both the compression and decomopression
+// zstd:3 gives a good trade-off for both the compression and decompression
 // speed.
 constexpr char kArrayRecordDefaultCompression[] = "zstd:3";
 
