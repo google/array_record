@@ -184,6 +184,18 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "lrc",
+    srcs = ["lrc.cc"],
+    hdrs = ["lrc.h"],
+    deps = [
+        ":thread_pool",
+        "//third_party/highway:hwy",
+        "@abseil-cpp//absl/base:endian",
+        "@abseil-cpp//absl/log",
+    ],
+)
+
 cc_test(
     name = "sequenced_chunk_writer_test",
     srcs = ["sequenced_chunk_writer_test.cc"],
@@ -198,7 +210,6 @@ cc_test(
         "@abseil-cpp//absl/types:span",
         "@googletest//:gtest_main",
         "@riegeli//riegeli/base:initializer",
-        "@riegeli//riegeli/base:shared_ptr",
         "@riegeli//riegeli/bytes:chain_writer",
         "@riegeli//riegeli/bytes:cord_writer",
         "@riegeli//riegeli/bytes:string_reader",
@@ -290,5 +301,15 @@ cc_test(
         "@riegeli//riegeli/base:initializer",
         "@riegeli//riegeli/bytes:string_reader",
         "@riegeli//riegeli/bytes:string_writer",
+    ],
+)
+
+cc_test(
+    name = "lrc_test",
+    srcs = ["lrc_test.cc"],
+    deps = [
+        ":lrc",
+        "@abseil-cpp//absl/log",
+        "@googletest//:gtest_main",
     ],
 )
