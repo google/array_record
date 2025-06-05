@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -91,7 +92,8 @@ PYBIND11_MODULE(array_record_module, m) {
              // Release the GIL because IO is time consuming.
              py::gil_scoped_release scoped_release;
              return new array_record::ArrayRecordReader(
-                 riegeli::Maker<riegeli::FdReader>(path, file_reader_options),
+                 riegeli::Maker<riegeli::FdReader>(
+                     path, std::move(file_reader_options)),
                  status_or_option.value(),
                  array_record::ArrayRecordGlobalPool());
            }),
