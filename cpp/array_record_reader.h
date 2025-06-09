@@ -64,20 +64,31 @@ class ArrayRecordReaderBase : public riegeli::Object {
    public:
     Options() {}
 
+    enum class IndexStorageOption {
+      // Keeps all the record/chunk index in memory. Trade-off memory usage for
+      // speed.
+      kInMemory = 0,
+      // Does not keep the index in memory and reads the index from disk for
+      // every access. Uses much smaller memory footprint.
+      kOffloaded = 1,
+    };
+
     // Parses options from text:
     // ```
     //   options ::= option? ("," option?)*
     //   option ::=
     //     "readahead_buffer_size" ":" readahead_buffer_size |
     //     "max_parallelism" ":" max_parallelism
+    //     "index_storage_option" ":" index_storage_option
     //   readahead_buffer_size ::= non-negative integer expressed as real with
     //     optional suffix [BkKMGTPE]. (Default 16MB). Set to 0 optimizes random
     //     access performance.
     //   max_parallelism ::= `auto` or non-negative integer. Each parallel
-    //   thread
-    //     owns its readhaed buffer with the size `readahead_buffer_size`.
-    //     (Default thread pool size) Set to 0 optimizes random access
-    //     performance.
+    //     thread owns its readhaed buffer with the size
+    //     `readahead_buffer_size`.  (Default thread pool size) Set to 0
+    //     optimizes random access performance.
+    //   index_storage_option ::= `in_memory` or `offloaded`. Default to
+    //     `in_memory`.
     // ```
     static absl::StatusOr<Options> FromString(absl::string_view text);
 
@@ -99,9 +110,19 @@ class ArrayRecordReaderBase : public riegeli::Object {
     }
     std::optional<uint32_t> max_parallelism() const { return max_parallelism_; }
 
+    // Specifies the index storage option.
+    Options& set_index_storage_option(IndexStorageOption storage_option) {
+      index_storage_option_ = storage_option;
+      return *this;
+    }
+    IndexStorageOption index_storage_option() const {
+      return index_storage_option_;
+    }
+
    private:
     std::optional<uint32_t> max_parallelism_ = std::nullopt;
     uint64_t readahead_buffer_size_ = kDefaultReadaheadBufferSize;
+    IndexStorageOption index_storage_option_ = IndexStorageOption::kInMemory;
   };
 
   // Reads the entire file in parallel and invokes the callback function of
@@ -303,7 +324,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
   // Holds all the internal state in a variable to simplify the implementation
   // of the "Close after Move" semantic.
   struct ArrayRecordReaderState;
-  friend class ChunkDispatcher;
+  friend class OffloadedChunkOffset;
   std::unique_ptr<ArrayRecordReaderState> state_;
 };
 
