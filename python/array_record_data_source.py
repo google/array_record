@@ -173,11 +173,12 @@ def _get_read_instructions(
   )
 
 
-def _create_reader(filename: epath.PathLike):
+def _create_reader(filename: epath.PathLike, additional_reader_options: str):
   """Returns an ArrayRecordReader for the given filename."""
+  reader_options = f"readahead_buffer_size:0,{additional_reader_options}"
   return array_record_module.ArrayRecordReader(
       filename,
-      options="readahead_buffer_size:0",
+      options=reader_options,
       file_reader_buffer_size=32768,
   )
 
@@ -219,6 +220,7 @@ class ArrayRecordDataSource:
       paths: Union[
           PathLikeOrFileInstruction, Sequence[PathLikeOrFileInstruction]
       ],
+      reader_options: dict[str, str] | None = None,
   ):
     """Creates a new ArrayRecordDataSource object.
 
@@ -238,6 +240,8 @@ class ArrayRecordDataSource:
         paths/FileInstructions. When you want to read subsets or have a large
         number of files prefer to pass FileInstructions. This makes the
         initialization faster.
+      reader_options: string of comma-separated options to be passed when
+        creating a reader.
     """
     if isinstance(paths, (str, pathlib.Path, FileInstruction)):
       paths = [paths]
@@ -257,6 +261,12 @@ class ArrayRecordDataSource:
       raise ValueError(
           "Unsupported path format was used. Path format must be "
           "a Sequence, String, pathlib.Path or FileInstruction."
+      )
+    if reader_options is None:
+      self._reader_options_string = ""
+    else:
+      self._reader_options_string = ",".join(
+          [f"{k}:{v}" for k, v in reader_options.items()]
       )
     self._read_instructions = _get_read_instructions(paths)
     self._paths = [ri.filename for ri in self._read_instructions]
@@ -324,7 +334,7 @@ class ArrayRecordDataSource:
     if self._readers[reader_idx] is not None:
       return
     filename = self._read_instructions[reader_idx].filename
-    reader = _create_reader(filename)
+    reader = _create_reader(filename, self._reader_options_string)
     _check_group_size(filename, reader)
     self._readers[reader_idx] = reader
 
