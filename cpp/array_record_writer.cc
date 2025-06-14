@@ -134,6 +134,9 @@ ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
   // Group
   options_parser.AddOption(
       "group_size", ValueParser::Int(1, INT32_MAX, &options.group_size_));
+  options_parser.AddOption(
+      "groups_awaiting_flush",
+      ValueParser::Int(0, INT32_MAX, &options.groups_awaiting_flush_));
   int32_t max_parallelism = 0;
   options_parser.AddOption(
       "max_parallelism",
@@ -199,6 +202,7 @@ ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
 std::string ArrayRecordWriterBase::Options::ToString() const {
   std::string option;
   absl::StrAppend(&option, "group_size:", this->group_size_,
+                  ",groups_awaiting_flush:", this->groups_awaiting_flush_,
                   ",transpose:", this->transpose_ ? "true" : "false",
                   ",pad_to_block_boundary:",
                   this->pad_to_block_boundary_ ? "true" : "false");
@@ -366,6 +370,7 @@ void ArrayRecordWriterBase::Initialize() {
   }
   // Add callback only after we serialize header and metadata.
   writer->set_submit_chunk_callback(submit_chunk_callback_.get());
+  // writer->set_chunks_awaiting_flush(options_.groups_awaiting_flush());
 }
 
 void ArrayRecordWriterBase::Done() {
