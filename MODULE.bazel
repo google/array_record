@@ -24,11 +24,11 @@ module(
 bazel_dep(name = "rules_proto", version = "7.0.2")
 bazel_dep(name = "rules_python", version = "0.40.0")
 bazel_dep(name = "platforms", version = "0.0.10")
-bazel_dep(name = "protobuf", version = "29.0")
+bazel_dep(name = "protobuf", version = "24.4")  # aligns with pygrain
 bazel_dep(name = "googletest", version = "1.15.2")
 bazel_dep(name = "abseil-cpp", version = "20240722.0")
 bazel_dep(name = "abseil-py", version = "2.1.0")
-bazel_dep(name = "eigen", version = "3.4.0.bcr.2")
+bazel_dep(name = "eigen", version = "3.4.0.bcr.3")
 bazel_dep(name = "riegeli", version = "0.0.0-20241218-3385e3c")
 bazel_dep(name = "pybind11_bazel", version = "2.12.0")
 
