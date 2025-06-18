@@ -126,12 +126,6 @@ void SequencedChunkWriterBase::TrySubmitFirstFutureChunk(
       return;
     }
   }
-  if (!chunk_writer->Flush(riegeli::FlushType::kFromObject)) {
-    Fail(riegeli::Annotate(
-        chunk_writer->status(),
-        absl::StrFormat("Could not flush chunk: %d", submitted_chunks_)));
-    return;
-  }
   if (callback_) {
     (*callback_)(submitted_chunks_, chunk_offset, decoded_data_size,
                  num_records);
@@ -147,9 +141,6 @@ void SequencedChunkWriterBase::Initialize() {
   if (!chunk_writer->WriteChunk(chunk)) {
     Fail(riegeli::Annotate(chunk_writer->status(),
                            "Failed to create the file header"));
-  }
-  if (!chunk_writer->Flush(riegeli::FlushType::kFromObject)) {
-    Fail(riegeli::Annotate(chunk_writer->status(), "Could not flush"));
   }
 }
 
