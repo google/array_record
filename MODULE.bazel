@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # TODO(fchern): automate version string alignment with setup.py
-VERSION = "0.6.0"
+VERSION = "0.7.2"
 
 module(
     name = "array_record",

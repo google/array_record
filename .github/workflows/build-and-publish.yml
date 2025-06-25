@@ -1,0 +1,49 @@
+# This workflow builds array_record wheels and uploads them as artifacts.
+
+name: Build & Publish
+
+on: workflow_dispatch
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: "Python ${{ matrix.python-version }} on ${{ matrix.os }}"
+    runs-on: "${{ matrix.os }}"
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-14, windows-2022]
+
+    steps:
+      - uses: "actions/checkout@v3"
+      - name: Create directory
+        run: |
+          mkdir -p /tmp/array_record
+          cp -r . /tmp/array_record
+      - name: Build package
+        run: |
+          set -xe
+          export PYTHON_VERSION=${{ matrix.python-version }}
+          export PYTHON_MAJOR_VERSION=$(echo $PYTHON_VERSION | cut -d. -f1)
+          export PYTHON_MINOR_VERSION=$(echo $PYTHON_VERSION | cut -d. -f2)
+          export BAZEL_VERSION="5.4.0"
+          export OUTPUT_DIR="/tmp/array_record"
+          export SOURCE_DIR="/tmp/array_record"
+          . "${SOURCE_DIR}"'/oss/runner_common.sh'
+          build_and_test_array_record
+          # $PYTHON_BIN -m pip install --find-links=/tmp/array_record/all_dist tensorflow array-record==0.7.2 protobuf~=4.25.0 jax grain
+          # $PYTHON_BIN "${SOURCE_DIR}"'/oss/test_with_tf.py'
+          # $PYTHON_BIN "${SOURCE_DIR}"'/oss/test_with_grain.py'
+      - name: Upload ArrayRecord artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-array-record-wheels-${{ matrix.os }}-${{ matrix.python-version }}
+          path: /tmp/array_record/all_dist/**/*.whl
