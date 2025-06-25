@@ -1,6 +1,4 @@
 build -c opt
-build --cxxopt=-std=c++17
-build --host_cxxopt=-std=c++17
 build --experimental_repo_remote_exec
 
 # TODO(fchern): Use non-hardcode path.
