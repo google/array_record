@@ -17,8 +17,16 @@ function main() {
   [ -e .bazelrc ] && rm .bazelrc
 
   write_to_bazelrc "build -c opt"
-  write_to_bazelrc "build --cxxopt=-std=c++17"
-  write_to_bazelrc "build --host_cxxopt=-std=c++17"
+  case "$(uname)" in
+    CYGWIN*|MINGW*|MSYS_NT*)
+      write_to_bazelrc "build --cxxopt=/std:c++17"
+      write_to_bazelrc "build --host_cxxopt=/std:c++17"
+      ;;
+    *)
+      write_to_bazelrc "build --cxxopt=-std=c++17"
+      write_to_bazelrc "build --host_cxxopt=-std=c++17"
+      ;;
+  esac
   write_to_bazelrc "build --experimental_repo_remote_exec"
   write_to_bazelrc "build --python_path=\"${PYTHON_BIN}\""
   write_to_bazelrc "test --python_path=\"${PYTHON_BIN}\""
@@ -35,8 +43,8 @@ function main() {
   export USE_BAZEL_VERSION="${BAZEL_VERSION}"
   bazel clean
   #bazel run //:requirements.update
-  bazel build ... --action_env MACOSX_DEPLOYMENT_TARGET='11.0' --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
-  bazel test --verbose_failures --test_output=errors ... --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
+  bazel build ... --action_env MACOSX_DEPLOYMENT_TARGET='11.0' --action_env PYTHON_BIN_PATH="${PYTHON_BIN}" --action_env PYTHON_CONFIG_BIN_PATH="${PYTHON_CONFIG_BIN}"
+  bazel test --verbose_failures --test_output=errors ... --action_env PYTHON_BIN_PATH="${PYTHON_BIN}" --action_env PYTHON_CONFIG_BIN_PATH="${PYTHON_CONFIG_BIN}"
 
   DEST="/tmp/array_record/all_dist"
   # Create the directory, then do dirname on a non-existent file inside it to

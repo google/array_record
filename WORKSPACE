@@ -52,19 +52,23 @@ cc_library(
 """
 )
 
-# `pybind11_bazel` (https://github.com/pybind/pybind11_bazel): 20240408
+# `pybind11_bazel` (https://github.com/pybind/pybind11_bazel): 20230130
 http_archive(
   name = "pybind11_bazel",
-  strip_prefix = "pybind11_bazel-2.12.0",
-  urls = ["https://github.com/pybind/pybind11_bazel/archive/v2.12.0.zip"],
+  strip_prefix = "pybind11_bazel-5f458fa53870223a0de7eeb60480dd278b442698",
+  sha256 = "b35f3abc3d52ee5c753fdeeb2b5129b99e796558754ca5d245e28e51c1072a21",
+  urls = ["https://github.com/pybind/pybind11_bazel/archive/5f458fa53870223a0de7eeb60480dd278b442698.tar.gz"],
 )
-# V2.12.0, 20240408
+# V2.10.3, 20230130
 http_archive(
   name = "pybind11",
-  build_file = "@pybind11_bazel//:pybind11-BUILD.bazel",
-  strip_prefix = "pybind11-2.12.0",
-  urls = ["https://github.com/pybind/pybind11/archive/refs/tags/v2.12.0.zip"],
+  build_file = "@pybind11_bazel//:pybind11.BUILD",
+  strip_prefix = "pybind11-2.10.3",
+  sha256 = "201966a61dc826f1b1879a24a3317a1ec9214a918c8eb035be2f30c3e9cfbdcb",
+  urls = ["https://github.com/pybind/pybind11/archive/refs/tags/v2.10.3.zip"],
 )
+load("@pybind11_bazel//:python_configure.bzl", "python_configure")
+python_configure(name = "local_config_python")
 
 # V21.12, 20230130
 # proto_library, cc_proto_library, and java_proto_library rules implicitly

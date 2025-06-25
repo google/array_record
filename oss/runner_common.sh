@@ -9,6 +9,8 @@ function setup_env_vars_py() {
   export PYTHON
   PYTHON_BIN="$(which python)"
   export PYTHON_BIN
+  PYTHON_CONFIG_BIN="python3-config" #"$(which python)"
+  export PYTHON_CONFIG_BIN
 }
 
 # Builds ArrayRecord from source code located in SOURCE_DIR producing wheels
