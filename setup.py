@@ -25,7 +25,7 @@ class BinaryDistribution(Distribution):
 
 setup(
     name='array_record',
-    version='0.6.0',
+    version='0.7.2',
     description='A file format that achieves a new frontier of IO efficiency',
     author='ArrayRecord team',
     author_email='no-reply@google.com',
@@ -41,6 +41,7 @@ setup(
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: 3.12',
+        'Programming Language :: Python :: 3.13',
     ],
     zip_safe=False,
     distclass=BinaryDistribution,

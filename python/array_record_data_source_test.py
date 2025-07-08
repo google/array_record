@@ -247,7 +247,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ])
     self.assertRegex(repr(ar), r"ArrayRecordDataSource\(hash_of_paths=[\w]+\)")
 
-  @flagsaver.flagsaver(grain_use_fast_array_record_reader=False)
+  #  @flagsaver.flagsaver(grain_use_fast_array_record_reader=False)
   def test_additional_reader_options(self):
     indices_to_read = [3, 0, 5, 9, 2, 1, 4, 7, 8, 6]
     ar = array_record_data_source.ArrayRecordDataSource(

@@ -19,7 +19,7 @@ jobs:
         run: |
           docker build --progress=plain --no-cache \
           --build-arg PYTHON_VERSION=${{ matrix.python-version }} \
-          -t array_record:latest - < oss/build.Dockerfile
+          -t array_record:latest - < oss/Dockerfile
       - name: Build wheels and test
         run: |
           docker run --rm -a stdin -a stdout -a stderr \
