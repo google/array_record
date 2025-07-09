@@ -16,12 +16,17 @@ function main() {
   # Remove .bazelrc if it already exists
   [ -e .bazelrc ] && rm .bazelrc
 
+  write_to_bazelrc "build --incompatible_default_to_explicit_init_py"
+  write_to_bazelrc "build --enable_platform_specific_config"
+  write_to_bazelrc "build --@rules_python//python/config_settings:python_version=${PYTHON_VERSION}"
+  write_to_bazelrc "test --@rules_python//python/config_settings:python_version=${PYTHON_VERSION}"
+  write_to_bazelrc "test --action_env PYTHON_VERSION=${PYTHON_VERSION}"
+  write_to_bazelrc "test --test_timeout=300"
+
   write_to_bazelrc "build -c opt"
   write_to_bazelrc "build --cxxopt=-std=c++17"
   write_to_bazelrc "build --host_cxxopt=-std=c++17"
   write_to_bazelrc "build --experimental_repo_remote_exec"
-  write_to_bazelrc "build --python_path=\"${PYTHON_BIN}\""
-  write_to_bazelrc "test --python_path=\"${PYTHON_BIN}\""
   PLATFORM="$(uname)"
 
   if [ -n "${CROSSTOOL_TOP}" ]; then
