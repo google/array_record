@@ -69,11 +69,13 @@ function main() {
   if [ -n "${AUDITWHEEL_PLATFORM}" ]; then
     echo $(date) : "=== Auditing wheel"
     auditwheel repair --plat ${AUDITWHEEL_PLATFORM} -w dist dist/*.whl
+    cp dist/*manylinux*.whl "${DEST}"
+  else
+    cp dist/*.whl "${DEST}"
   fi
 
   echo $(date) : "=== Listing wheel"
-  ls -lrt dist/*.whl
-  cp dist/*.whl "${DEST}"
+  ls -lrt "${DEST}"/*.whl
   popd
 
   echo $(date) : "=== Output wheel file is in: ${DEST}"
@@ -81,7 +83,7 @@ function main() {
   # Install ArrayRecord from the wheel and run smoke tests.
   # TF is not available on Python 3.13 and above.
   if (( "${PYTHON_MINOR_VERSION}" < 13 )); then
-    $PYTHON_BIN -m pip install --find-links=/tmp/grain/all_dist --pre array-record
+    $PYTHON_BIN -m pip install --find-links="${DEST}" --pre array-record
     $PYTHON_BIN -m pip install jax tensorflow grain
     $PYTHON_BIN oss/test_with_grain.py
     $PYTHON_BIN oss/test_with_tf.py
