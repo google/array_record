@@ -88,7 +88,7 @@ function main() {
 
   # Install ArrayRecord from the wheel and run smoke tests.
   # TF is not available on Python 3.13 and above.
-  if (( "${PYTHON_MINOR_VERSION}" < 13 )); then
+  if [ "$(uname)" != "Darwin" ] && (( "${PYTHON_MINOR_VERSION}" < 13 )); then
     $PYTHON_BIN -m pip install --find-links="${DEST}" --pre array-record
     $PYTHON_BIN -m pip install jax tensorflow grain
     $PYTHON_BIN oss/test_with_grain.py
