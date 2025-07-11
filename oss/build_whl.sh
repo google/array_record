@@ -27,6 +27,7 @@ function main() {
   write_to_bazelrc "build --cxxopt=-std=c++17"
   write_to_bazelrc "build --host_cxxopt=-std=c++17"
   write_to_bazelrc "build --experimental_repo_remote_exec"
+  write_to_bazelrc "common --check_direct_dependencies=error"
   PLATFORM="$(uname)"
 
   if [ -n "${CROSSTOOL_TOP}" ]; then
