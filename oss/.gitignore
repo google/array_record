@@ -1,0 +1,12 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Bazel outputs
+bazel-array_record
+bazel-bin
+bazel-out
+bazel-testlogs
+
+MODULE.bazel.lock

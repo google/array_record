@@ -1,15 +1,29 @@
-# Steps to build a new array_record pip package
+# Steps to build and publish a new `array_record` PyPI package
 
-1. Update the version number in setup.py
+`array_record` supports automatic publishing to PyPI via GitHub Actions.
+Once you're ready to create a new release you need to:
 
-2. In the root folder, run
+1. Update the version number in `setup.py`.
 
-  ```
-  ./oss/build_whl.sh
-  ```
-  to use the current `python3` version.  Otherwise, optionally set
-  ```
-  PYTHON_VERSION=3.9 ./oss/build_whl.sh
-  ```
+2. Go to [GitHub Actions page](https://github.com/google/array_record/actions),
+   select `Build and Publish Release` workflow, and run it. It will spin up a
+   few test jobs, and once all of them complete successfully, a `publish-wheel`
+   will start.
 
-3. Wheels are in `all_dist/`.
+3. On completion you should notice a new release on
+   https://pypi.org/project/array-record/#history.
+
+---
+
+If you want to build a wheel locally in your development environment in the root
+folder, run:
+
+```sh
+./oss/build_whl.sh
+```
+to use the current `python3` version. Otherwise, optionally set:
+```sh
+PYTHON_VERSION=3.9 ./oss/build_whl.sh
+```
+
+Wheels are in `all_dist/`.
