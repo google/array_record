@@ -5,37 +5,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.9', '3.10', '3.11']
-    env:
-      DOCKER_BUILDKIT: 1
-      TMP_FOLDER: /tmp/array_record
-    steps:
-      - uses: actions/checkout@v2
-      - name: Build Docker image
-        run: |
-          docker build --progress=plain --no-cache \
-          --build-arg PYTHON_VERSION=${{ matrix.python-version }} \
-          -t array_record:latest - < oss/Dockerfile
-      - name: Build wheels and test
-        run: |
-          docker run --rm -a stdin -a stdout -a stderr \
-            --env PYTHON_VERSION=${{ matrix.python-version }} \
-            --volume ${GITHUB_WORKSPACE}:${TMP_FOLDER} --name array_record array_record:latest \
-            bash oss/build_whl.sh
-      - name: Install in a blank Docker and test the import in Python
-        run: |
-          docker run --rm -a stdin -a stdout -a stderr \
-            --env PYTHON_VERSION=${{ matrix.python-version }} \
-            --volume ${GITHUB_WORKSPACE}:/root \
-            python:${{ matrix.python-version }} bash -c "
-              ARRAY_RECORD_VERSION=\$(python /root/setup.py --version 2>&1 /dev/null)
-              SHORT_PYTHON_VERSION=\${PYTHON_VERSION//./}
-              ARRAY_RECORD_WHEEL=\"/root/all_dist/array_record-\${ARRAY_RECORD_VERSION}-py\${SHORT_PYTHON_VERSION}-none-any.whl\"
-              python -m pip install \${ARRAY_RECORD_WHEEL} &&
-              python -c 'import array_record' &&
-              python -c 'from array_record.python import array_record_data_source'
-            "
+  call-workflow:
+    uses: ./.github/workflows/build_and_publish_template.yml
+    with:
+      upload_wheels: false

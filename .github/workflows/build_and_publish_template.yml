@@ -6,9 +6,9 @@ on:
   workflow_call:
     inputs:
       pypi_project_url:
-        required: true
+        required: false
         type: string
-      is_nightly:
+      upload_wheels:
         required: true
         type: boolean
 
@@ -66,6 +66,7 @@ jobs:
           path: /tmp/array_record/all_dist/*.whl
 
   publish-wheel:
+    if: ${{ inputs.upload_wheels }}
     runs-on: ubuntu-22.04
     needs: build-and-test
     permissions:

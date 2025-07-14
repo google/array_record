@@ -10,4 +10,4 @@ jobs:
       id-token: write
     with:
       pypi_project_url: https://pypi.org/project/array-record
-      is_nightly: false
+      upload_wheels: true
