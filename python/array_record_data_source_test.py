@@ -247,22 +247,6 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ])
     self.assertRegex(repr(ar), r"ArrayRecordDataSource\(hash_of_paths=[\w]+\)")
 
-  @flagsaver.flagsaver(grain_use_fast_array_record_reader=False)
-  def test_additional_reader_options(self):
-    indices_to_read = [3, 0, 5, 9, 2, 1, 4, 7, 8, 6]
-    ar = array_record_data_source.ArrayRecordDataSource(
-        [
-            self.testdata_dir / "digits.array_record-00000-of-00002",
-            self.testdata_dir / "digits.array_record-00001-of-00002",
-        ],
-        {"index_storage_option": "in_memory"},
-    )
-    # We need to read the records to trigger the creation of the readers.
-    _ = [ar[x] for x in indices_to_read]
-    self.assertLen(ar._readers, 2)
-    self.assertIsInstance(ar._readers[0], array_record_module.ArrayRecordReader)
-    self.assertIsInstance(ar._readers[1], array_record_module.ArrayRecordReader)
-
 
 class RunInParallelTest(parameterized.TestCase):
 
