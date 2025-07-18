@@ -2,6 +2,8 @@
 # It supports efficient random access and various compression algorithms.
 
 load("@rules_proto//proto:defs.bzl", "proto_library")
+load("//third_party/bazel_rules/rules_cc/cc:cc_library.bzl", "cc_library")
+load("//third_party/bazel_rules/rules_cc/cc:cc_test.bzl", "cc_test")
 
 package(default_visibility = ["//visibility:public"])
 
