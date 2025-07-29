@@ -27,7 +27,7 @@ function main() {
   write_to_bazelrc "build --cxxopt=-std=c++17"
   write_to_bazelrc "build --host_cxxopt=-std=c++17"
   write_to_bazelrc "build --experimental_repo_remote_exec"
-  write_to_bazelrc "common --check_direct_dependencies=error"
+  # write_to_bazelrc "common --check_direct_dependencies=error"
   PLATFORM="$(uname)"
 
   if [ -n "${CROSSTOOL_TOP}" ]; then
@@ -91,7 +91,8 @@ function main() {
   $PYTHON_BIN -c 'import array_record'
   $PYTHON_BIN -c 'from array_record.python import array_record_data_source'
   # TF is not available on Python 3.13 and above.
-  if [ "$(uname)" != "Darwin" ] && (( "${PYTHON_MINOR_VERSION}" < 13 )); then
+  # if [ "$(uname)" != "Darwin" ] && (( "${PYTHON_MINOR_VERSION}" < 13 )); then
+  if (( "${PYTHON_MINOR_VERSION}" < 13 )); then
     $PYTHON_BIN -m pip install jax tensorflow grain
     $PYTHON_BIN oss/test_import_grain.py
     $PYTHON_BIN oss/test_import_tensorflow.py

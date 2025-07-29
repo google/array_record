@@ -1,0 +1,13 @@
+diff --git a/MODULE.bazel b/MODULE.bazel
+index 2c1f801c..5d864a1c 100644
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -44,7 +44,7 @@ bazel_dep(
+ )
+ bazel_dep(
+     name = "protobuf",
+-    version = "28.3",
++    version = "21.7",
+     repo_name = "com_google_protobuf",
+ )
+ bazel_dep(
