@@ -217,11 +217,11 @@ class ArrayRecordWriterBase : public riegeli::Object {
     // 31 in 64-bit build).
     //
     // Default: `absl::nullopt`.
-    Options& set_window_log(std::optional<int> window_log) {
+    Options& set_window_log(absl::optional<int> window_log) {
       compressor_options_.set_window_log(window_log);
       return *this;
     }
-    std::optional<int> window_log() const {
+    absl::optional<int> window_log() const {
       return compressor_options_.window_log();
     }
 
