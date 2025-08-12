@@ -9,11 +9,17 @@ REQUIRED_PACKAGES = [
     'etils[epath]',
 ]
 
+TF_PACKAGE = ['tensorflow>=2.20.0rc0']
+
 BEAM_EXTRAS = [
-    'apache-beam[gcp]==2.53.0',
+    'apache-beam[gcp]>=2.53.0',
     'google-cloud-storage>=2.11.0',
-    'tensorflow>=2.14.0'
-]
+] + TF_PACKAGE
+
+TEST_EXTRAS = [
+    'jax',
+    'grain',
+] + TF_PACKAGE
 
 
 class BinaryDistribution(Distribution):
@@ -34,7 +40,7 @@ setup(
     package_data={'': ['*.so']},
     python_requires='>=3.10',
     install_requires=REQUIRED_PACKAGES,
-    extras_require={'beam': BEAM_EXTRAS},
+    extras_require={'beam': BEAM_EXTRAS, 'test': TEST_EXTRAS},
     url='https://github.com/google/array_record',
     license='Apache-2.0',
     classifiers=[
