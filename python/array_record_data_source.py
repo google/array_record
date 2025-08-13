@@ -34,7 +34,6 @@ class RandomAccessDataSource(Protocol, Generic[T]):
 import bisect
 from concurrent import futures
 import dataclasses
-import hashlib
 import itertools
 import os
 import pathlib
@@ -399,13 +398,6 @@ class ArrayRecordDataSource:
     # We open readers lazily when we need to read from them. Thus, we don't
     # need to re-open the same files as before pickling.
     self._readers = [None] * len(self._read_instructions)
-
-  def __repr__(self) -> str:
-    """Storing a hash of paths since paths can be a very long list."""
-    h = hashlib.sha1()
-    for p in self._paths:
-      h.update(p.encode())
-    return f"ArrayRecordDataSource(hash_of_paths={h.hexdigest()})"
 
 
 def _get_flag_value(flag: flags.FlagHolder[int]) -> int:
