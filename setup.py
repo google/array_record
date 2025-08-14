@@ -9,7 +9,7 @@ REQUIRED_PACKAGES = [
     'etils[epath]',
 ]
 
-TF_PACKAGE = ['tensorflow>=2.20.0rc0']
+TF_PACKAGE = ['tensorflow>=2.20.0']
 
 BEAM_EXTRAS = [
     'apache-beam[gcp]>=2.53.0',
