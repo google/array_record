@@ -91,9 +91,9 @@ function main() {
   $PYTHON_BIN -c 'import array_record'
   $PYTHON_BIN -c 'from array_record.python import array_record_data_source'
   # TF is not available on Python 3.13 and above.
-  if [ "$(uname)" != "Darwin" ] && (( "${PYTHON_MINOR_VERSION}" < 13 )); then
+  if (( "${PYTHON_MINOR_VERSION}" < 13 )); then
     $PYTHON_BIN -m pip install jax tensorflow>=2.20.0 grain
-    $PYTHON_BIN oss/test_import_grain.py
+    # $PYTHON_BIN oss/test_import_grain.py TODO: uncomment once next Grain is released
     $PYTHON_BIN oss/test_import_tensorflow.py
   fi
 }
