@@ -250,7 +250,7 @@ class ArrayRecordWriterBase::SubmitChunkCallback
   // return false if we can't schedule the callback.
   // return true and inc num_concurrent_chunk_writers if we can add a new one.
   bool TrackConcurrentChunkWriters() {
-    absl::MutexLock l(&mu_);
+    absl::MutexLock l(mu_);
     if (num_concurrent_chunk_writers_ >= max_parallelism_) {
       return false;
     }
@@ -495,7 +495,7 @@ void ArrayRecordWriterBase::SubmitChunkCallback::operator()(
   footer.set_num_records(num_records);
   array_footer_.push_back(std::move(footer));
 
-  absl::MutexLock l(&mu_);
+  absl::MutexLock l(mu_);
   num_concurrent_chunk_writers_--;
 }
 

@@ -34,7 +34,7 @@ namespace array_record {
 
 bool SequencedChunkWriterBase::CommitFutureChunk(
     std::future<absl::StatusOr<riegeli::Chunk>>&& future_chunk) {
-  absl::MutexLock l(&mu_);
+  absl::MutexLock l(mu_);
   if (!ok()) {
     return false;
   }
@@ -64,13 +64,13 @@ bool SequencedChunkWriterBase::SubmitFutureChunks(bool block) {
   if (block) {
     // When blocking, we block both on mutex acquisition and on future
     // completion.
-    absl::MutexLock lock(&mu_);
+    absl::MutexLock lock(mu_);
     riegeli::ChunkWriter* writer = get_writer();
     while (!queue_.empty()) {
       TrySubmitFirstFutureChunk(writer);
     }
     return ok();
-  } else if (mu_.TryLock()) {
+  } else if (mu_.try_lock()) {
     // When non-blocking, we only proceed if we can lock the mutex without
     // blocking, and we only process those futures that are ready. We need
     // to unlock the mutex manually in this case, and take care to call ok()
@@ -82,7 +82,7 @@ bool SequencedChunkWriterBase::SubmitFutureChunks(bool block) {
       TrySubmitFirstFutureChunk(writer);
     }
     bool result = ok();
-    mu_.Unlock();
+    mu_.unlock();
     return result;
   } else {
     return true;
