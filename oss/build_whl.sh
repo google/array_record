@@ -28,6 +28,11 @@ function main() {
   write_to_bazelrc "build --host_cxxopt=-std=c++17"
   write_to_bazelrc "build --experimental_repo_remote_exec"
   write_to_bazelrc "common --check_direct_dependencies=error"
+  # Reduce noise during build.
+  write_to_bazelrc "build --cxxopt=-Wno-deprecated-declarations --host_cxxopt=-Wno-deprecated-declarations"
+  write_to_bazelrc "build --cxxopt=-Wno-parentheses --host_cxxopt=-Wno-parentheses"
+  write_to_bazelrc "build --cxxopt=-Wno-sign-compare --host_cxxopt=-Wno-sign-compare"
+
   PLATFORM="$(uname)"
 
   if [ -n "${CROSSTOOL_TOP}" ]; then
@@ -90,9 +95,12 @@ function main() {
   $PYTHON_BIN -m pip install ${OUTPUT_DIR}/all_dist/array_record*.whl
   $PYTHON_BIN -c 'import array_record'
   $PYTHON_BIN -c 'from array_record.python import array_record_data_source'
-  $PYTHON_BIN -m pip install jax tensorflow>=2.20.0 grain
-  $PYTHON_BIN oss/test_import_grain.py
-  $PYTHON_BIN oss/test_import_tensorflow.py
+  # TF does not have a Python 3.14 wheel yet.
+  if (( "${PYTHON_MINOR_VERSION}" < 14 )); then
+    $PYTHON_BIN -m pip install jax tensorflow>=2.20.0 grain --only-binary h5py
+    $PYTHON_BIN oss/test_import_tensorflow.py
+    $PYTHON_BIN oss/test_import_grain.py
+  fi
 }
 
 main
