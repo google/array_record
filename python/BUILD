@@ -20,6 +20,8 @@ pybind_extension(
         "@riegeli//riegeli/base:initializer",
         "@riegeli//riegeli/bytes:fd_reader",
         "@riegeli//riegeli/bytes:fd_writer",
+        "@riegeli//riegeli/gcs:gcs_object",
+        "@riegeli//riegeli/gcs:gcs_reader",
     ],
 )
 
