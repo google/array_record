@@ -31,7 +31,7 @@ class BinaryDistribution(Distribution):
 
 setup(
     name='array_record',
-    version='0.8.3',
+    version='0.8.4',
     description='A file format that achieves a new frontier of IO efficiency',
     author='ArrayRecord team',
     author_email='no-reply@google.com',

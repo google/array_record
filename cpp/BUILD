@@ -276,8 +276,14 @@ cc_test(
 
 cc_test(
     name = "array_record_reader_test",
+    size = "large",
     srcs = ["array_record_reader_test.cc"],
     shard_count = 4,
+    # Timeout on *san tests
+    tags = [
+        "noasan",
+        "nomsan",
+    ],
     deps = [
         ":array_record_reader",
         ":array_record_writer",

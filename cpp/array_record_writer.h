@@ -108,7 +108,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
     //     "window_log" : window_log |
     //     "pad_to_block_boundary" (":" ("true" | "false"))?
     //   group_size ::= positive integer which specifies number of records to be
-    //     grouped into a chunk before compression. (default 65536)
+    //     grouped into a chunk before compression. (default 1)
     //   saturation_delay_ms ::= positive integer which specifies a delay in
     //     milliseconds when the parallel writing queue is saturated.
     //   max_parallelism ::= `auto` or positive integers which specifies
@@ -126,7 +126,7 @@ class ArrayRecordWriterBase : public riegeli::Object {
     //
     // The larger the value, the denser the file, at the cost of more expansive
     // random accessing.
-    static constexpr uint32_t kDefaultGroupSize = 65536;
+    static constexpr uint32_t kDefaultGroupSize = 1;
     Options& set_group_size(uint32_t group_size) {
       group_size_ = group_size;
       return *this;

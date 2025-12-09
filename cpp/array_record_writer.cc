@@ -105,10 +105,7 @@ template <typename T, typename H = std::string>
 absl::StatusOr<Chunk> ChunkFromSpan(CompressorOptions compression_options,
                                     absl::Span<const T> span,
                                     std::optional<H> header = std::nullopt) {
-  riegeli::SimpleEncoder encoder(
-      compression_options,
-      riegeli::SimpleEncoder::TuningOptions().set_size_hint(
-          span.size() * sizeof(typename decltype(span)::value_type)));
+  riegeli::SimpleEncoder encoder(compression_options);
   if (header.has_value()) {
     encoder.AddRecord(header.value());
   }
@@ -166,7 +163,7 @@ ArrayRecordWriterBase::Options::FromString(absl::string_view text) {
   // Padding
   options_parser.AddOption(
       "pad_to_block_boundary",
-      ValueParser::Enum({{"", true}, {"true", true}, {"false", false}},
+      ValueParser::Enum({{"", false}, {"true", true}, {"false", false}},
                         &options.pad_to_block_boundary_));
   if (!options_parser.FromString(text)) {
     return options_parser.status();
@@ -400,10 +397,8 @@ std::unique_ptr<riegeli::ChunkEncoder> ArrayRecordWriterBase::CreateEncoder() {
         riegeli::TransposeEncoder::TuningOptions().set_bucket_size(
             options_.transpose_bucket_size()));
   } else {
-    encoder = std::make_unique<riegeli::SimpleEncoder>(
-        options_.compressor_options(),
-        riegeli::SimpleEncoder::TuningOptions().set_size_hint(
-            submit_chunk_callback_->get_last_decoded_data_size()));
+    encoder =
+        std::make_unique<riegeli::SimpleEncoder>(options_.compressor_options());
   }
   if (pool_) {
     return std::make_unique<riegeli::DeferredEncoder>(std::move(encoder));

@@ -47,7 +47,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
 
   def test_check_default_group_size(self):
     filename = os.path.join(FLAGS.test_tmpdir, "test.array_record")
-    writer = array_record_module.ArrayRecordWriter(filename)
+    writer = array_record_module.ArrayRecordWriter(filename, "group_size:65536")
     writer.write(b"foobar")
     writer.close()
     reader = array_record_module.ArrayRecordReader(filename)

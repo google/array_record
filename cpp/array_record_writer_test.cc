@@ -220,6 +220,59 @@ TEST_P(ArrayRecordWriterTest, RandomDatasetTest) {
   ASSERT_TRUE(reader.Close());
 }
 
+TEST_P(ArrayRecordWriterTest, CompressionRatioTest) {
+  float expected_ratio = 1.0;
+  auto options = GetOptions();
+  if (options.pad_to_block_boundary()) {
+    GTEST_SKIP()
+        << "Padded boundaries are known to have bad compression ratio.";
+  }
+  // We use uniform int distribution for values that are within a byte.
+  // Therefore regular compression algorithm should easily compress it
+  // for at least 2x and near 4x. However, the snappy compression doesn't
+  // work that well so we set a higher threshold.
+  switch (options.compression_type()) {
+    case riegeli::CompressionType::kNone:
+      GTEST_SKIP() << "No need to verify compression ratio for uncompressed.";
+    case riegeli::CompressionType::kBrotli:
+      expected_ratio = 0.4;
+      break;
+    case riegeli::CompressionType::kZstd:
+      expected_ratio = 0.4;
+      break;
+    case riegeli::CompressionType::kSnappy:
+      expected_ratio = 0.6;
+      break;
+  }
+  options.set_group_size(128);
+  std::mt19937 bitgen;
+  std::uniform_int_distribution<uint32_t> dist(0, 128);
+  constexpr uint32_t num_records = 32768;
+  constexpr uint32_t dim = 256;
+  std::vector<uint32_t> records(num_records * dim);
+
+  for (auto i : Seq(num_records * dim)) {
+    records[i] = dist(bitgen);
+  }
+  std::string encoded;
+
+  ARThreadPool* pool = nullptr;
+  if (std::get<3>(GetParam())) {
+    pool = ArrayRecordGlobalPool();
+  }
+
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), options, pool);
+
+  for (auto i : Seq(num_records)) {
+    EXPECT_TRUE(
+        writer.WriteRecord(records.data() + dim * i, dim * sizeof(uint32_t)));
+  }
+  ASSERT_TRUE(writer.Close());
+  EXPECT_LE(encoded.size(),
+            num_records * dim * sizeof(uint32_t) * expected_ratio);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     ParamTest, ArrayRecordWriterTest,
     testing::Combine(testing::Values(CompressionType::kUncompressed,
@@ -253,7 +306,7 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_FALSE(option.pad_to_block_boundary());
 
     EXPECT_EQ(option.ToString(),
-              "group_size:65536,"
+              "group_size:1,"
               "transpose:false,"
               "pad_to_block_boundary:false,"
               "zstd:3,"
@@ -274,7 +327,7 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_FALSE(option.pad_to_block_boundary());
 
     EXPECT_EQ(option.ToString(),
-              "group_size:65536,"
+              "group_size:1,"
               "transpose:false,"
               "pad_to_block_boundary:false,"
               "zstd:3,"
@@ -362,7 +415,7 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_TRUE(option.pad_to_block_boundary());
 
     EXPECT_EQ(option.ToString(),
-              "group_size:65536,"
+              "group_size:1,"
               "transpose:false,"
               "pad_to_block_boundary:true,"
               "uncompressed");
@@ -382,7 +435,7 @@ TEST(ArrayRecordWriterOptionsTest, ParsingTest) {
     EXPECT_TRUE(option.pad_to_block_boundary());
 
     EXPECT_EQ(option.ToString(),
-              "group_size:65536,"
+              "group_size:1,"
               "transpose:false,"
               "pad_to_block_boundary:true,"
               "snappy");
