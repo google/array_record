@@ -81,8 +81,8 @@ class ArrayRecordReaderBase : public riegeli::Object {
     //     "max_parallelism" ":" max_parallelism
     //     "index_storage_option" ":" index_storage_option
     //   readahead_buffer_size ::= non-negative integer expressed as real with
-    //     optional suffix [BkKMGTPE]. (Default 16MB). Set to 0 optimizes random
-    //     access performance.
+    //     optional suffix [BKMG]. (Example 16MB). Set to 0 optimizes random
+    //     access performance. Defaults 0.
     //   max_parallelism ::= `auto` or non-negative integer. Each parallel
     //     thread owns its readhaed buffer with the size
     //     `readahead_buffer_size`.  (Default thread pool size) Set to 0
@@ -95,7 +95,7 @@ class ArrayRecordReaderBase : public riegeli::Object {
     // Readahead speeds up sequential reads, but harms random access. When using
     // ArrayRecord for random access, user should configure the buffer size with
     // 0.
-    static constexpr uint64_t kDefaultReadaheadBufferSize = 1L << 24;
+    static constexpr uint64_t kDefaultReadaheadBufferSize = 0;
     Options& set_readahead_buffer_size(uint64_t readahead_buffer_size) {
       readahead_buffer_size_ = readahead_buffer_size;
       return *this;

@@ -167,11 +167,11 @@ ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
   // ReadaheadBuffer
   options_parser.AddOption(
       "readahead_buffer_size",
-      ValueParser::Or(
-          ValueParser::Enum({{"auto", kDefaultReadaheadBufferSize}},
-                            &options.readahead_buffer_size_),
-          ValueParser::Bytes(0, std::numeric_limits<uint64_t>::max(),
-                             &options.readahead_buffer_size_)));
+      ValueParser::Or(ValueParser::Enum({{"auto", kDefaultReadaheadBufferSize}},
+                                        &options.readahead_buffer_size_),
+                      ValueParser::Bytes(/*min_value=*/0,
+                                         /*max_value=*/1024 * 1024 * 1024,
+                                         &options.readahead_buffer_size_)));
   // Index storage option
   options_parser.AddOption(
       "index_storage_option",
