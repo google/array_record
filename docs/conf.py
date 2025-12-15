@@ -22,8 +22,8 @@ copyright = '2024, ArrayRecord Contributors'
 author = 'ArrayRecord Contributors'
 
 # The full version, including alpha/beta/rc tags
-release = '0.8.1'
-version = '0.8.1'
+release = '0.8.2'
+version = '0.8.2'
 
 # -- General configuration ---------------------------------------------------
 
