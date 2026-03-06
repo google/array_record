@@ -119,6 +119,7 @@ void SequencedChunkWriterBase::TrySubmitFirstFutureChunk(
   }
   if (pad_to_block_boundary_) {
     if (!chunk_writer->PadToBlockBoundary()) {
+    {
       Fail(riegeli::Annotate(
           chunk_writer->status(),
           absl::StrFormat("Could not pad boundary for chunk: %d",
