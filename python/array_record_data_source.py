@@ -38,6 +38,7 @@ import hashlib
 import itertools
 import os
 import pathlib
+import queue
 import re
 import typing
 from typing import Any, Callable, Iterator, List, Mapping, Protocol, Sequence, SupportsIndex, Tuple, TypeVar, Union
@@ -271,7 +272,9 @@ class ArrayRecordDataSource:
     self._read_instructions = _get_read_instructions(paths)
     self._paths = [ri.filename for ri in self._read_instructions]
     # We open readers lazily when we need to read from them.
-    self._readers = [None] * len(self._read_instructions)
+    # To ensure thread safety while allowing concurrent reads, we maintain a
+    # pool of readers for each shard.
+    self._reader_pools = [queue.LifoQueue() for _ in self._read_instructions]
     self._num_records = sum(
         map(lambda x: x.num_records, self._read_instructions)
     )
@@ -286,10 +289,11 @@ class ArrayRecordDataSource:
 
   def __exit__(self, exc_type, exc_value, traceback):
     logging.debug("__exit__ for ArrayRecordDataSource is called.")
-    for reader in self._readers:
-      if reader:
-        reader.close()
-    self._readers = [None] * len(self._read_instructions)
+    for pool in self._reader_pools:
+      while not pool.empty():
+        reader = pool.get()
+        if reader:
+          reader.close()
 
   def __len__(self) -> int:
     return self._num_records
@@ -329,21 +333,29 @@ class ArrayRecordDataSource:
         positions_and_indices[reader_idx] = [(position, idx)]
     return positions_and_indices
 
-  def _ensure_reader_exists(self, reader_idx: int) -> None:
-    """Threadsafe method to create corresponding reader if it doesn't exist."""
-    if self._readers[reader_idx] is not None:
-      return
-    filename = self._read_instructions[reader_idx].filename
-    reader = _create_reader(filename, self._reader_options_string)
-    _check_group_size(filename, reader)
-    self._readers[reader_idx] = reader
+  def _get_reader(self, reader_idx: int) -> Any:
+    """Gets a reader from the pool or creates a new one."""
+    try:
+      return self._reader_pools[reader_idx].get_nowait()
+    except queue.Empty:
+      filename = self._read_instructions[reader_idx].filename
+      reader = _create_reader(filename, self._reader_options_string)
+      _check_group_size(filename, reader)
+      return reader
+
+  def _release_reader(self, reader_idx: int, reader: Any) -> None:
+    """Returns a reader to the pool."""
+    self._reader_pools[reader_idx].put(reader)
 
   def __getitem__(self, record_key: SupportsIndex) -> bytes:
     reader_idx, position = self._reader_idx_and_position(record_key)
-    self._ensure_reader_exists(reader_idx)
-    if hasattr(self._readers[reader_idx], "read"):
-      return self._readers[reader_idx].read([position])[0]
-    return self._readers[reader_idx][position]
+    reader = self._get_reader(reader_idx)
+    try:
+      if hasattr(reader, "read"):
+        return reader.read([position])[0]
+      return reader[position]
+    finally:
+      self._release_reader(reader_idx, reader)
 
   def __getitems__(
       self, record_keys: Sequence[SupportsIndex]
@@ -352,14 +364,16 @@ class ArrayRecordDataSource:
         reader_idx: int, reader_positions_and_indices: Sequence[Tuple[int, int]]
     ) -> Sequence[Tuple[Any, int]]:
       """Reads records using the given reader keeping track of the indices."""
-      # Initialize readers lazily when we need to read from them.
-      self._ensure_reader_exists(reader_idx)
-      positions, indices = list(zip(*reader_positions_and_indices))
-      if hasattr(self._readers[reader_idx], "read"):
-        records = self._readers[reader_idx].read(positions)  # pytype: disable=attribute-error
-      else:
-        records = [self._readers[reader_idx][p] for p in positions]
-      return list(zip(records, indices))
+      reader = self._get_reader(reader_idx)
+      try:
+        positions, indices = list(zip(*reader_positions_and_indices))
+        if hasattr(reader, "read"):
+          records = reader.read(positions)  # pytype: disable=attribute-error
+        else:
+          records = [reader[p] for p in positions]
+        return list(zip(records, indices))
+      finally:
+        self._release_reader(reader_idx, reader)
 
     positions_and_indices = self._split_keys_per_reader(record_keys)
     num_threads = _get_flag_value(_GRAIN_NUM_THREADS_FETCHING_RECORDS)
@@ -390,7 +404,7 @@ class ArrayRecordDataSource:
   def __getstate__(self):
     logging.debug("__getstate__ for ArrayRecordDataSource is called.")
     state = self.__dict__.copy()
-    del state["_readers"]
+    del state["_reader_pools"]
     return state
 
   def __setstate__(self, state):
@@ -398,7 +412,15 @@ class ArrayRecordDataSource:
     self.__dict__.update(state)
     # We open readers lazily when we need to read from them. Thus, we don't
     # need to re-open the same files as before pickling.
-    self._readers = [None] * len(self._read_instructions)
+    self._reader_pools = [queue.LifoQueue() for _ in self._read_instructions]
+
+  def _peek_readers(self) -> List[Any]:
+    """Returns a list of readers (one per shard) or None (for testing)."""
+    readers = []
+    for pool in self._reader_pools:
+      with pool.mutex:
+        readers.append(pool.queue[-1] if pool.queue else None)
+    return readers
 
   def __repr__(self) -> str:
     """Storing a hash of paths since paths can be a very long list."""
