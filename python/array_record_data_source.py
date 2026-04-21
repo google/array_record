@@ -39,6 +39,7 @@ import itertools
 import os
 import pathlib
 import re
+import threading
 import typing
 from typing import Any, Callable, Iterator, List, Mapping, Protocol, Sequence, SupportsIndex, Tuple, TypeVar, Union
 
@@ -96,6 +97,8 @@ def _run_in_parallel(
   """
   if num_workers < 1:
     raise ValueError("num_workers must be >=1 for parallelism.")
+  if num_workers == 1 or len(list_of_kwargs_to_function) == 1:
+    return [function(**kwargs) for kwargs in list_of_kwargs_to_function]
   thread_futures = []
   with futures.ThreadPoolExecutor(num_workers) as executor:
     for kwargs in list_of_kwargs_to_function:
@@ -212,6 +215,62 @@ def _check_group_size(
     )
 
 
+class BoundedReaderPool:
+  """A pool of readers for a single shard with a dynamic upper bound."""
+
+  def __init__(self, filename: str, options_string: str, max_size: int):
+    self._filename = filename
+    self._options_string = options_string
+    self._max_size = max_size
+    self._readers = []
+    self._created_count = 0
+    self._condition = threading.Condition()
+    self._group_size_checked = False
+    self.has_read_method = None
+
+  def get(self) -> Any:
+    """Gets a reader from the pool, blocking if the cap is reached."""
+    create_new = False
+    with self._condition:
+      # Wait if no idle readers and we reached the cap
+      while not self._readers and self._created_count >= self._max_size:
+        self._condition.wait()
+
+      if self._readers:
+        return self._readers.pop()
+
+      self._created_count += 1
+      create_new = True
+
+    if create_new:
+      reader = _create_reader(self._filename, self._options_string)
+      if self.has_read_method is None:
+        self.has_read_method = hasattr(reader, "read")
+      if not self._group_size_checked:
+        _check_group_size(self._filename, reader)
+        self._group_size_checked = True
+      return reader
+
+  def put(self, reader: Any) -> None:
+    """Returns a reader to the pool."""
+    with self._condition:
+      self._readers.append(reader)
+      self._condition.notify()
+
+  def close_all(self) -> None:
+    """Closes all pooled readers."""
+    with self._condition:
+      for reader in self._readers:
+        if reader:
+          reader.close()
+      self._readers.clear()
+
+  def peek_readers(self) -> List[Any]:
+    """Returns the list of readers currently in the pool."""
+    with self._condition:
+      return list(self._readers)
+
+
 class ArrayRecordDataSource:
   """Datasource for ArrayRecord files."""
 
@@ -221,6 +280,7 @@ class ArrayRecordDataSource:
           PathLikeOrFileInstruction, Sequence[PathLikeOrFileInstruction]
       ],
       reader_options: dict[str, str] | None = None,
+      reader_pool_size: int = 1,
   ):
     """Creates a new ArrayRecordDataSource object.
 
@@ -242,6 +302,8 @@ class ArrayRecordDataSource:
         initialization faster.
       reader_options: string of comma-separated options to be passed when
         creating a reader.
+      reader_pool_size: Number of readers to pre-allocate in the pool for each
+        shard. Default is 1.
     """
     if isinstance(paths, (str, pathlib.Path, FileInstruction)):
       paths = [paths]
@@ -265,13 +327,25 @@ class ArrayRecordDataSource:
     if reader_options is None:
       self._reader_options_string = ""
     else:
+      reader_options = dict(reader_options)
+      if "reader_pool_size" in reader_options:
+        reader_pool_size = int(reader_options.pop("reader_pool_size"))
       self._reader_options_string = ",".join(
           [f"{k}:{v}" for k, v in reader_options.items()]
       )
     self._read_instructions = _get_read_instructions(paths)
     self._paths = [ri.filename for ri in self._read_instructions]
+    self._reader_pool_size = max(reader_pool_size, 1)
+    # We maintain a pool of readers for each shard to ensure thread safety
+    # while allowing concurrent reads.
+    self._shard_pools = [
+        BoundedReaderPool(
+            ri.filename, self._reader_options_string, self._reader_pool_size
+        )
+        for ri in self._read_instructions
+    ]
     # We open readers lazily when we need to read from them.
-    self._readers = [None] * len(self._read_instructions)
+
     self._num_records = sum(
         map(lambda x: x.num_records, self._read_instructions)
     )
@@ -279,6 +353,7 @@ class ArrayRecordDataSource:
         lambda x: x.num_records, self._read_instructions
     )
     self._prefix_sums = list(itertools.accumulate(records_per_instruction))
+    self._thread_local = threading.local()
 
   def __enter__(self):
     logging.debug("__enter__ for ArrayRecordDataSource is called.")
@@ -286,10 +361,15 @@ class ArrayRecordDataSource:
 
   def __exit__(self, exc_type, exc_value, traceback):
     logging.debug("__exit__ for ArrayRecordDataSource is called.")
-    for reader in self._readers:
-      if reader:
-        reader.close()
-    self._readers = [None] * len(self._read_instructions)
+    # Clear thread-local cache for the current thread.
+    if hasattr(self._thread_local, "reader"):
+      if self._thread_local.reader is not None:
+        self._thread_local.reader.close()
+      self._thread_local.reader = None
+      self._thread_local.pool_idx = -1
+
+    for pool in self._shard_pools:
+      pool.close_all()
 
   def __len__(self) -> int:
     return self._num_records
@@ -298,79 +378,111 @@ class ArrayRecordDataSource:
     for index in range(self._num_records):
       yield self[index]
 
-  def _reader_idx_and_position(
+  def _pool_idx_and_position(
       self, record_key: SupportsIndex
   ) -> Tuple[int, int]:
-    """Computes reader idx and position of given record key."""
+    """Computes pool idx and position of given record key."""
     record_key = record_key.__index__()
     if record_key < 0 or record_key >= self._num_records:
       raise ValueError("Record key should be in [0, num_records)")
-    reader_idx = bisect.bisect_right(self._prefix_sums, record_key)
+    pool_idx = bisect.bisect_right(self._prefix_sums, record_key)
     records_in_previous_instructions = 0
-    if reader_idx > 0:
-      records_in_previous_instructions = self._prefix_sums[reader_idx - 1]
+    if pool_idx > 0:
+      records_in_previous_instructions = self._prefix_sums[pool_idx - 1]
     return (
-        reader_idx,
+        pool_idx,
         record_key
         - records_in_previous_instructions
-        + self._read_instructions[reader_idx].start,
+        + self._read_instructions[pool_idx].start,
     )
 
-  def _split_keys_per_reader(
+  def _split_keys_per_pool(
       self, record_keys: Sequence[SupportsIndex]
   ) -> Mapping[int, Sequence[Tuple[int, int]]]:
-    """Splits record_keys among readers."""
+    """Splits record_keys among pools."""
     positions_and_indices = {}
     for idx, record_key in enumerate(record_keys):
-      reader_idx, position = self._reader_idx_and_position(record_key)
-      if reader_idx in positions_and_indices:
-        positions_and_indices[reader_idx].append((position, idx))
+      pool_idx, position = self._pool_idx_and_position(record_key)
+      if pool_idx in positions_and_indices:
+        positions_and_indices[pool_idx].append((position, idx))
       else:
-        positions_and_indices[reader_idx] = [(position, idx)]
+        positions_and_indices[pool_idx] = [(position, idx)]
     return positions_and_indices
 
-  def _ensure_reader_exists(self, reader_idx: int) -> None:
-    """Threadsafe method to create corresponding reader if it doesn't exist."""
-    if self._readers[reader_idx] is not None:
-      return
-    filename = self._read_instructions[reader_idx].filename
-    reader = _create_reader(filename, self._reader_options_string)
-    _check_group_size(filename, reader)
-    self._readers[reader_idx] = reader
+  def _get_reader(self, pool_idx: int) -> Any:
+    """Gets a reader from the single-slot thread-local cache or the pool."""
+    if not hasattr(self._thread_local, "pool_idx"):
+      self._thread_local.pool_idx = -1
+      self._thread_local.reader = None
+
+    if self._thread_local.pool_idx == pool_idx:
+      return self._thread_local.reader
+
+    # Return previous reader to pool if we have one
+    if self._thread_local.reader is not None:
+      self._shard_pools[self._thread_local.pool_idx].put(
+          self._thread_local.reader
+      )
+
+    # Get new reader and cache it
+    reader = self._shard_pools[pool_idx].get()
+    self._thread_local.pool_idx = pool_idx
+    self._thread_local.reader = reader
+    return reader
+
+  def _release_reader(self, pool_idx: int, reader: Any) -> None:
+    """No-op: we keep it cached in _get_reader until the next request."""
+    pass
+
+  def _read_record(
+      self, reader: Any, pool: BoundedReaderPool, position: int
+  ) -> bytes:
+    """Helper to read a record using the best available method."""
+    if pool.has_read_method:
+      return reader.read([position])[0]
+    if hasattr(reader, "read_record"):
+      return reader.read_record(position)
+    return reader[position]
 
   def __getitem__(self, record_key: SupportsIndex) -> bytes:
-    reader_idx, position = self._reader_idx_and_position(record_key)
-    self._ensure_reader_exists(reader_idx)
-    if hasattr(self._readers[reader_idx], "read"):
-      return self._readers[reader_idx].read([position])[0]
-    return self._readers[reader_idx][position]
+    pool_idx, position = self._pool_idx_and_position(record_key)
+    reader = self._get_reader(pool_idx)
+    try:
+      return self._read_record(reader, self._shard_pools[pool_idx], position)
+    finally:
+      self._release_reader(pool_idx, reader)
 
   def __getitems__(
       self, record_keys: Sequence[SupportsIndex]
   ) -> Sequence[bytes]:
+
     def read_records(
-        reader_idx: int, reader_positions_and_indices: Sequence[Tuple[int, int]]
+        pool_idx: int, reader_positions_and_indices: Sequence[Tuple[int, int]]
     ) -> Sequence[Tuple[Any, int]]:
       """Reads records using the given reader keeping track of the indices."""
-      # Initialize readers lazily when we need to read from them.
-      self._ensure_reader_exists(reader_idx)
-      positions, indices = list(zip(*reader_positions_and_indices))
-      if hasattr(self._readers[reader_idx], "read"):
-        records = self._readers[reader_idx].read(positions)  # pytype: disable=attribute-error
-      else:
-        records = [self._readers[reader_idx][p] for p in positions]
-      return list(zip(records, indices))
+      reader = self._get_reader(pool_idx)
+      pool = self._shard_pools[pool_idx]
+      try:
+        records = []
+        for position, _ in reader_positions_and_indices:
+          records.append(self._read_record(reader, pool, position))
+        indices = [idx for _, idx in reader_positions_and_indices]
+        return list(zip(records, indices))
+      finally:
+        self._release_reader(pool_idx, reader)
 
-    positions_and_indices = self._split_keys_per_reader(record_keys)
+    # Group record keys by pool/shard to maximize reader reuse.
+    positions_and_indices = self._split_keys_per_pool(record_keys)
     num_threads = _get_flag_value(_GRAIN_NUM_THREADS_FETCHING_RECORDS)
+    # Parallelize reads across shards using the available threads.
     num_workers = min(len(positions_and_indices), num_threads)
     list_of_kwargs_to_read_records = []
     for (
-        reader_idx,
+        pool_idx,
         reader_positions_and_indices,
     ) in positions_and_indices.items():
       list_of_kwargs_to_read_records.append({
-          "reader_idx": reader_idx,
+          "pool_idx": pool_idx,
           "reader_positions_and_indices": reader_positions_and_indices,
       })
     records_with_indices: Sequence[Sequence[Tuple[Any, int]]] = (
@@ -390,15 +502,40 @@ class ArrayRecordDataSource:
   def __getstate__(self):
     logging.debug("__getstate__ for ArrayRecordDataSource is called.")
     state = self.__dict__.copy()
-    del state["_readers"]
+    state.pop("_shard_pools", None)
+    state.pop("_reader_pools", None)
+    state.pop("_thread_local", None)
     return state
 
   def __setstate__(self, state):
     logging.debug("__setstate__ for ArrayRecordDataSource is called.")
     self.__dict__.update(state)
-    # We open readers lazily when we need to read from them. Thus, we don't
-    # need to re-open the same files as before pickling.
-    self._readers = [None] * len(self._read_instructions)
+    self._shard_pools = [
+        BoundedReaderPool(
+            ri.filename,
+            self._reader_options_string,
+            getattr(self, "_reader_pool_size", 1),
+        )
+        for ri in self._read_instructions
+    ]
+    self._thread_local = threading.local()
+    # We open readers lazily when we need to read from them.
+
+  def _peek_readers(self) -> List[Any]:
+    """Returns a list of readers (one per shard) or None (for testing only)."""
+    readers = []
+    for i, pool in enumerate(self._shard_pools):
+      reader = None
+      if (
+          hasattr(self._thread_local, "pool_idx")
+          and self._thread_local.pool_idx == i
+      ):
+        reader = self._thread_local.reader
+      if reader is None:
+        pooled_readers = pool.peek_readers()
+        reader = pooled_readers[-1] if pooled_readers else None
+      readers.append(reader)
+    return readers
 
   def __repr__(self) -> str:
     """Storing a hash of paths since paths can be a very long list."""

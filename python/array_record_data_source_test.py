@@ -17,6 +17,7 @@ from concurrent import futures
 import dataclasses
 import os
 import pathlib
+import threading
 from unittest import mock
 
 from absl import flags
@@ -37,6 +38,61 @@ class DummyFileInstruction:
   skip: int
   take: int
   examples_in_shard: int
+
+
+class BoundedReaderPoolTest(absltest.TestCase):
+
+  @mock.patch.object(array_record_data_source, "_create_reader")
+  @mock.patch.object(array_record_data_source, "_check_group_size")
+  def test_lazy_creation(self, _, mock_create):
+    mock_create.return_value = mock.Mock()
+    pool = array_record_data_source.BoundedReaderPool("dummy_file", "", 2)
+
+    # First get should create
+    r1 = pool.get()
+    self.assertEqual(mock_create.call_count, 1)
+
+    # Second get should create
+    _ = pool.get()
+    self.assertEqual(mock_create.call_count, 2)
+
+    # Release one
+    pool.put(r1)
+
+    # Third get should reuse
+    r3 = pool.get()
+    self.assertEqual(mock_create.call_count, 2)
+    self.assertEqual(r3, r1)
+
+  @mock.patch.object(array_record_data_source, "_create_reader")
+  @mock.patch.object(array_record_data_source, "_check_group_size")
+  def test_blocking(self, _, mock_create):
+    mock_create.return_value = mock.Mock()
+    pool = array_record_data_source.BoundedReaderPool("dummy_file", "", 1)
+
+    r1 = pool.get()
+
+    # Second get should block! We run in a separate thread!
+    res = []
+
+    def worker():
+      r = pool.get()
+      res.append(r)
+
+    t = threading.Thread(target=worker)
+    t.start()
+
+    # Wait a bit to ensure it's blocked
+    t.join(0.1)
+    self.assertFalse(res)  # Still empty
+
+    # Release r1
+    pool.put(r1)
+
+    # Now thread should complete
+    t.join(1.0)
+    self.assertTrue(res)
+    self.assertEqual(res[0], r1)
 
 
 class ArrayRecordDataSourcesTest(absltest.TestCase):
@@ -109,7 +165,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ) as ar:
       actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._readers))
+    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
 
   def test_array_record_data_source_string_read_instructions(self):
     indices_to_read = [0, 1, 2, 3, 4]
@@ -132,7 +188,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ]) as ar:
       actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._readers))
+    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
 
   def test_array_record_data_source_random_order(self):
     # some random permutation
@@ -144,7 +200,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ]) as ar:
       actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._readers))
+    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
 
   def test_array_record_data_source_random_order_batched(self):
     # some random permutation
@@ -156,7 +212,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ]) as ar:
       actual_data = ar.__getitems__(indices_to_read)
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._readers))
+    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
 
   def test_array_record_data_source_file_instructions(self):
     file_instruction_one = DummyFileInstruction(
@@ -187,9 +243,9 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
       actual_data = [ar[x] for x in indices_to_read]
 
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._readers))
+    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
 
-  def test_array_record_source_reader_idx_and_position(self):
+  def test_array_record_source_pool_idx_and_position(self):
     file_instructions = [
         # 2 records
         DummyFileInstruction(
@@ -221,19 +277,19 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
       for record_key in range(len(ar)):
         self.assertEqual(
             expected_indices_and_positions[record_key],
-            ar._reader_idx_and_position(record_key),
+            ar._pool_idx_and_position(record_key),
         )
 
-  def test_array_record_source_reader_idx_and_position_negative_idx(self):
+  def test_array_record_source_pool_idx_and_position_negative_idx(self):
     with array_record_data_source.ArrayRecordDataSource([
         self.testdata_dir / "digits.array_record-00000-of-00002",
         self.testdata_dir / "digits.array_record-00001-of-00002",
     ]) as ar:
       with self.assertRaises(ValueError):
-        ar._reader_idx_and_position(-1)
+        ar._pool_idx_and_position(-1)
 
       with self.assertRaises(ValueError):
-        ar._reader_idx_and_position(len(ar))
+        ar._pool_idx_and_position(len(ar))
 
   def test_array_record_source_empty_sequence(self):
     with self.assertRaises(ValueError):
