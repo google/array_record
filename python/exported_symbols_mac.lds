@@ -1,0 +1,1 @@
+_PyInit_array_record_module
