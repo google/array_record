@@ -32,6 +32,11 @@ function main() {
   write_to_bazelrc "build --cxxopt=-Wno-deprecated-declarations --host_cxxopt=-Wno-deprecated-declarations"
   write_to_bazelrc "build --cxxopt=-Wno-parentheses --host_cxxopt=-Wno-parentheses"
   write_to_bazelrc "build --cxxopt=-Wno-sign-compare --host_cxxopt=-Wno-sign-compare"
+  # Set -fvisbility=hidden to prevent symbol collision with TensorFlow on macOS
+  if [ "$(uname)" = "Darwin" ]; then
+    write_to_bazelrc "build --copt=-fvisibility=hidden"
+    write_to_bazelrc "build --copt=-fvisibility-inlines-hidden"
+  fi
 
   PLATFORM="$(uname)"
 

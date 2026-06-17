@@ -2,6 +2,7 @@
 
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@pypi//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -10,6 +11,14 @@ licenses(["notice"])
 pybind_extension(
     name = "array_record_module",
     srcs = ["array_record_module.cc"],
+    linkopts = select({
+        "@platforms//os:macos": ["-Wl,-exported_symbols_list,$(location :exported_symbols_mac.lds)"],
+        "//conditions:default": [],
+    }),
+    additional_linker_inputs = select({
+        "@platforms//os:macos": [":exported_symbols_mac.lds"],
+        "//conditions:default": [],
+    }),
     deps = [
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings",
