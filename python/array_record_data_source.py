@@ -140,7 +140,7 @@ def _run_in_parallel(
         # `executor.shutdown(cancel_futures=True)`.
         for remaining_future in thread_futures:
           remaining_future.cancel()
-        raise completed_future.exception()
+        raise completed_future.exception()  # pyrefly: ignore[bad-raise]
   return [future.result() for future in thread_futures]
 
 
@@ -442,7 +442,7 @@ class ArrayRecordDataSource:
     self._read_instructions = _get_read_instructions(paths)
     self._paths = [ri.filename for ri in self._read_instructions]
     self._reader_pool_size = (
-        reader_pool_size or _get_flag_value(_ARRAY_RECORD_READER_POOL_SIZE) or 1
+        reader_pool_size or _get_flag_value(_ARRAY_RECORD_READER_POOL_SIZE) or 1  # pyrefly: ignore[bad-argument-type]
     )
 
     # Lock-free connection pool per shard
