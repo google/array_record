@@ -35,8 +35,16 @@ limitations under the License.
 #include "cpp/test_utils.h"
 #include "cpp/thread_pool.h"
 #include "riegeli/base/maker.h"
+#include "riegeli/bytes/chain_writer.h"
 #include "riegeli/bytes/string_reader.h"
 #include "riegeli/bytes/string_writer.h"
+#include "riegeli/chunk_encoding/chunk.h"
+#include "riegeli/chunk_encoding/chunk_decoder.h"
+#include "riegeli/chunk_encoding/compressor_options.h"
+#include "riegeli/chunk_encoding/constants.h"
+#include "riegeli/chunk_encoding/simple_encoder.h"
+#include "riegeli/records/chunk_reader.h"
+#include "riegeli/records/chunk_writer.h"
 
 constexpr uint32_t kDatasetSize = 3210;
 
@@ -311,6 +319,135 @@ TEST(ArrayRecordReaderOptionTest, ParserTest) {
     EXPECT_EQ(option.max_parallelism(), 0);
     EXPECT_EQ(option.readahead_buffer_size(), 0);
   }
+}
+
+std::string CorruptFooterGroupSize(absl::string_view valid_encoded,
+                                   int new_group_size) {
+  std::string corrupted_encoded;
+  riegeli::StringReader<> string_reader(valid_encoded);
+  riegeli::StringWriter<> string_writer(&corrupted_encoded);
+  riegeli::DefaultChunkReader<> chunk_reader(&string_reader);
+  riegeli::DefaultChunkWriter<> chunk_writer(&string_writer);
+
+  bool past_footer = false;
+  riegeli::Chunk chunk;
+  while (chunk_reader.ReadChunk(chunk)) {
+    if (past_footer) {
+      chunk_writer.WriteChunk(chunk);
+      continue;
+    }
+
+    riegeli::ChunkDecoder decoder;
+    if (!decoder.Decode(chunk)) {
+      chunk_writer.WriteChunk(chunk);
+      continue;
+    }
+
+    decoder.SetIndex(0);
+    absl::string_view first_record;
+    if (!decoder.ReadRecord(first_record)) {
+      chunk_writer.WriteChunk(chunk);
+      continue;
+    }
+
+    RiegeliFooterMetadata metadata;
+    if (metadata.ParsePartialFromString(first_record) &&
+        metadata.has_array_record_metadata()) {
+      riegeli::SimpleEncoder footer_encoder(
+          riegeli::CompressorOptions().set_uncompressed());
+      footer_encoder.AddRecord(first_record);
+
+      absl::string_view footer_record;
+      while (decoder.ReadRecord(footer_record)) {
+        ArrayRecordFooter footer;
+        if (footer.ParsePartialFromString(footer_record) &&
+            footer.has_chunk_offset()) {
+          footer.set_num_records(new_group_size);
+          footer_encoder.AddRecord(footer.SerializeAsString());
+        } else {
+          footer_encoder.AddRecord(footer_record);
+        }
+      }
+      riegeli::Chunk corrupted_chunk;
+      riegeli::ChunkType chunk_type;
+      uint64_t num_records;
+      uint64_t decoded_data_size;
+      riegeli::ChainWriter<> chain_writer(&corrupted_chunk.data);
+      footer_encoder.EncodeAndClose(chain_writer, chunk_type, num_records,
+                                    decoded_data_size);
+      chain_writer.Close();
+      corrupted_chunk.header = riegeli::ChunkHeader(
+          corrupted_chunk.data, chunk_type, num_records, decoded_data_size);
+      chunk_writer.WriteChunk(corrupted_chunk);
+      past_footer = true;
+    } else {
+      chunk_writer.WriteChunk(chunk);
+    }
+  }
+  chunk_writer.Close();
+  string_writer.Close();
+
+  if (corrupted_encoded.size() < 64 * 1024) {
+    corrupted_encoded.resize(64 * 1024, '\0');
+  }
+  return corrupted_encoded;
+}
+
+TEST(ArrayRecordReaderTest, GroupSizeZero) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(10).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_TRUE(writer.WriteRecord("test"));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  std::string corrupted = CorruptFooterGroupSize(encoded, 0);
+
+  auto reader_opt = ArrayRecordReaderBase::Options();
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<riegeli::StringReader>(corrupted), reader_opt, nullptr);
+  EXPECT_FALSE(reader.status().ok()) << reader.status().message();
+  EXPECT_EQ(reader.status().code(), absl::StatusCode::kInvalidArgument)
+      << reader.status().message();
+}
+
+TEST(ArrayRecordReaderTest, OutOfBoundsChunkIdx) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(10).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_TRUE(writer.WriteRecord("test"));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  // Valid file has 1 chunk. group_size in footer is 5.
+  // We corrupt it to group_size = 1.
+  // The metadata says num_records = 5, num_chunks = 1.
+  // Reader will think record_group_size = 1.
+  // So chunk_idx = record_idx / 1.
+  // If we read index 4: chunk_idx = 4.
+  // But per_chunk_indices size = num_chunks = 1.
+  // 4 >= 1, triggering OutOfRangeError!
+  std::string corrupted = CorruptFooterGroupSize(encoded, 1);
+
+  auto reader_opt = ArrayRecordReaderBase::Options();
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<riegeli::StringReader>(corrupted), reader_opt, nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+
+  std::vector<uint64_t> indices = {4};
+  auto status = reader.ParallelReadRecordsWithIndices(
+      indices, [&](uint64_t, absl::string_view) -> absl::Status {
+        return absl::OkStatus();
+      });
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
 }
 
 }  // namespace

@@ -409,6 +409,10 @@ void ArrayRecordReaderBase::Initialize() {
     }
 
     if (!state_->chunk_offsets->empty()) {
+      if (state_->record_group_size <= 0) {
+        Fail(InvalidArgumentError("record_group_size cannot be zero"));
+        return;
+      }
       // Finds minimal chunk_group_size that is larger equals to the readahead
       // buffer. A chunk_group corresponds to a PRead call. Smaller
       // chunk_group_size is better for random access, the converse is better
@@ -624,6 +628,9 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
                              state_->num_records);
     }
     uint64_t chunk_idx = record_idx / state_->record_group_size;
+    if (chunk_idx >= per_chunk_indices.size()) {
+      return OutOfRangeError("chunk_idx out of bounds");
+    }
     uint64_t local_idx = record_idx - chunk_idx * state_->record_group_size;
     per_chunk_indices[chunk_idx].emplace_back(local_idx, indices_idx);
   }
