@@ -2,6 +2,7 @@
 
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@pypi//:requirements.bzl", "requirement")
+load("//third_party/bazel_rules/rules_python/python:py_binary.bzl", "py_binary")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -34,6 +35,20 @@ py_test(
     ],
 )
 
+py_test(
+    name = "read_my_data_test",
+    srcs = ["read_my_data_test.py"],
+    data = [
+        ":array_record_module.so",
+        "//python/testdata:fine_tuning_train_multilabel.array_record",
+    ],
+    deps = [
+        "//third_party/py/requests",
+        "//third_party/py/tensorflow",
+        "@abseil-py//absl/testing:absltest",
+    ],
+)
+
 py_library(
     name = "array_record_data_source",
     srcs = ["array_record_data_source.py"],
@@ -57,5 +72,16 @@ py_test(
         "@abseil-py//absl/testing:absltest",
         "@abseil-py//absl/testing:flagsaver",
         "@abseil-py//absl/testing:parameterized",
+    ],
+)
+
+py_binary(
+    name = "read_my_data_bin",
+    srcs = ["read_my_data_test.py"],
+    data = [":array_record_module.so"],
+    main = "read_my_data_test.py",
+    deps = [
+        "//third_party/py/tensorflow",
+        "@abseil-py//absl/testing:absltest",
     ],
 )
