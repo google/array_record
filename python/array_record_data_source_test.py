@@ -110,7 +110,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ) as ar:
       actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
+    self.assertTrue(all(reader is None for reader in ar._readers))
 
   def test_array_record_data_source_string_read_instructions(self):
     indices_to_read = [0, 1, 2, 3, 4]
@@ -133,7 +133,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ]) as ar:
       actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
+    self.assertTrue(all(reader is None for reader in ar._readers))
 
   def test_array_record_data_source_random_order(self):
     # some random permutation
@@ -145,7 +145,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ]) as ar:
       actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
+    self.assertTrue(all(reader is None for reader in ar._readers))
 
   def test_array_record_data_source_random_order_batched(self):
     # some random permutation
@@ -157,7 +157,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ]) as ar:
       actual_data = ar.__getitems__(indices_to_read)
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
+    self.assertTrue(all(reader is None for reader in ar._readers))
 
   def test_array_record_data_source_file_instructions(self):
     file_instruction_one = DummyFileInstruction(
@@ -188,7 +188,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
       actual_data = [ar[x] for x in indices_to_read]
 
     self.assertEqual(expected_data, actual_data)
-    self.assertTrue(all(reader is None for reader in ar._peek_readers()))
+    self.assertTrue(all(reader is None for reader in ar._readers))
 
   def test_array_record_source_reader_idx_and_position(self):
     file_instructions = [
