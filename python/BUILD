@@ -10,6 +10,15 @@ licenses(["notice"])
 pybind_extension(
     name = "array_record_module",
     srcs = ["array_record_module.cc"],
+    additional_linker_inputs = select({
+        "@platforms//os:linux": [":array_record_module.lds"],
+        "//conditions:default": [],
+    }),
+    linkopts = select({
+        "@platforms//os:osx": ["-Wl,-exported_symbol,_PyInit_array_record_module"],
+        "@platforms//os:linux": ["-Wl,--version-script=$(location :array_record_module.lds)"],
+        "//conditions:default": [],
+    }),
     deps = [
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings",

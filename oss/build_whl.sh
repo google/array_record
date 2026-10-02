@@ -81,8 +81,10 @@ function main() {
     echo $(date) : "=== Auditing wheel"
     auditwheel repair --plat ${AUDITWHEEL_PLATFORM} -w dist dist/*.whl
     cp dist/*manylinux*.whl "${DEST}"
+    WHEEL_FILE="${DEST}/$(basename "$(ls -1 dist/*manylinux*.whl | head -n 1)")"
   else
     cp dist/*.whl "${DEST}"
+    WHEEL_FILE="${DEST}/$(basename "$(ls -1 dist/*.whl | head -n 1)")"
   fi
 
   echo $(date) : "=== Listing wheel"
@@ -92,12 +94,13 @@ function main() {
   echo $(date) : "=== Output wheel file is in: ${DEST}"
 
   # Install ArrayRecord from the wheel and run smoke tests.
-  $PYTHON_BIN -m pip install ${OUTPUT_DIR}/all_dist/array_record*.whl
+  $PYTHON_BIN -m pip install "${WHEEL_FILE}"
   $PYTHON_BIN -c 'import array_record'
   $PYTHON_BIN -c 'from array_record.python import array_record_data_source'
   # TF does not have a Python 3.14 wheel yet.
   if (( "${PYTHON_MINOR_VERSION}" < 14 )); then
-    $PYTHON_BIN -m pip install jax tensorflow>=2.20.0 grain --only-binary h5py
+    $PYTHON_BIN -m pip install jax "tensorflow>=2.20.0" grain --only-binary :all:
+    $PYTHON_BIN -m pip install --force-reinstall --no-deps "${WHEEL_FILE}"
     $PYTHON_BIN oss/test_import_tensorflow.py
     $PYTHON_BIN oss/test_import_grain.py
   fi
