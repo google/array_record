@@ -40,6 +40,14 @@ limitations under the License.
 
 namespace py = pybind11;
 
+namespace {
+
+// Prefetch the last 1 MiB when opening a GCS object so that the object size,
+// Riegeli postscript, and ArrayRecord footer can be read in a single HTTP GET.
+constexpr int64_t kGcsTailPrefetchSize = 1 << 20;
+
+}  // namespace
+
 PYBIND11_MODULE(array_record_module, m) {
   using array_record::ArrayRecordReaderBase;
   using array_record::ArrayRecordWriterBase;
@@ -103,7 +111,8 @@ PYBIND11_MODULE(array_record_module, m) {
                return new array_record::ArrayRecordReader(
                    riegeli::Maker<riegeli::GcsReader>(
                        google::cloud::storage::Client(),
-                       riegeli::GcsObject(path), std::move(gcs_reader_options)),
+                       riegeli::GcsObject(path), std::move(gcs_reader_options),
+                       google::cloud::storage::ReadLast(kGcsTailPrefetchSize)),
                    status_or_option.value(),
                    array_record::ArrayRecordGlobalPool());
              } else {
