@@ -103,6 +103,11 @@ _ARRAY_RECORD_READER_POOL_SIZE = flags.DEFINE_integer(
     None,
     "The default reader pool size per shard in ArrayRecordDataSource.",
 )
+_ARRAY_RECORD_GCS_READAHEAD_BUFFER_SIZE_BYTES = flags.DEFINE_integer(
+    "array_record_gcs_readahead_buffer_size_bytes",
+    4 * 1024 * 1024,
+    "Default ArrayRecord readahead_buffer_size in bytes for gs:// paths.",
+)
 
 
 def _run_in_parallel(
@@ -188,8 +193,202 @@ def _get_read_instructions(
   )
 
 
+def _parse_options_string(options_string: str) -> dict[str, str]:
+  """Parses a comma-separated 'key:value' options string into a dict."""
+  parsed: dict[str, str] = {}
+  if not options_string:
+    return parsed
+  for item in options_string.split(","):
+    if not item:
+      continue
+    if ":" in item:
+      key, value = item.split(":", 1)
+      parsed[key] = value
+    else:
+      parsed[item] = ""
+  return parsed
+
+
+def _format_options_dict(options: Mapping[str, str]) -> str:
+  """Formats a dict of reader options into a comma-separated string."""
+  return ",".join(
+      f"{key}:{value}" if value else key for key, value in options.items()
+  )
+
+
+class _StatefulArrayRecordReader:
+  """Adapter that routes sequential or small-shard reads to stateful readahead.
+
+  Uses stateful `seek(position)` + `read()` (readahead) when:
+  - the entire shard fits within the readahead buffer
+  (`_is_likely_small_shard`),
+  - `position` falls within the currently cached readahead window
+    (`_buf_start <= position < _buf_end`), or
+  - `position` is part of a sequential scan (`position == _last_pos + 1`,
+    initial single-record read, or sequential batch stream `_seq_mode`).
+  Otherwise (non-sequential random reads on shards larger than the readahead
+  buffer), routes to stateless `read([position])` / `read(positions)` so point
+  reads release the Python GIL, avoid 4 MiB read amplification, and do not
+  evict an active readahead buffer in `state_->current_decoders`.
+  """
+
+  def __init__(self, reader: Any, readahead_bytes: int = 4 * 1024 * 1024):
+    self._reader = reader
+    self._readahead_bytes = readahead_bytes
+    self._num_records: int | None = None
+    self._whole_shard_fits: bool | None = None
+    self._records_per_buf: int = 1
+    self._last_pos: int | None = None
+    self._buf_range: range | None = None
+    self._seq_mode: bool = False
+
+  def _init_shard_stats(self, sample_record_len: int) -> None:
+    """Initializes shard record count and readahead buffer capacity."""
+    if self._whole_shard_fits is not None:
+      return
+    num_records = self._reader.num_records()
+    if isinstance(num_records, int) and num_records > 0:
+      self._num_records = num_records
+      rec_len = max(1, sample_record_len)
+      self._records_per_buf = max(1, self._readahead_bytes // rec_len)
+      self._whole_shard_fits = self._num_records * rec_len <= int(
+          self._readahead_bytes * 1.1
+      )
+    else:
+      self._whole_shard_fits = False
+
+  def _is_likely_small_shard(self) -> bool:
+    """Returns True if the shard is estimated to fit in the readahead buffer."""
+    if self._whole_shard_fits is not None:
+      return self._whole_shard_fits
+    num_records = self._reader.num_records()
+    if isinstance(num_records, int) and 0 < num_records <= max(
+        1, self._readahead_bytes // 65536
+    ):
+      return True
+    return False
+
+  def _in_buf(self, position: int) -> bool:
+    """Returns True if position falls within the active readahead range."""
+    return self._buf_range is not None and position in self._buf_range
+
+  def read_record(self, position: int) -> bytes:
+    """Reads a single record using adaptive stateful or stateless access."""
+    is_in_buf = self._in_buf(position)
+    is_contiguous = (
+        self._last_pos is not None and position == self._last_pos + 1
+    )
+    is_initial = self._last_pos is None
+    if is_contiguous:
+      self._seq_mode = True
+
+    if (
+        self._is_likely_small_shard()
+        or is_in_buf
+        or is_contiguous
+        or is_initial
+        or self._seq_mode
+    ):
+      if not is_contiguous and not is_in_buf and not is_initial:
+        # Requiring the next record to be contiguous to keep _seq_mode active
+        # ensures random single-record access immediately switches to stateless.
+        self._seq_mode = False
+      self._reader.seek(position)
+      data = self._reader.read()
+      self._init_shard_stats(len(data))
+      if not is_in_buf:
+        if self._whole_shard_fits:
+          self._buf_range = range(0, self._num_records or self._records_per_buf)
+        else:
+          aligned_start = (
+              position // self._records_per_buf
+          ) * self._records_per_buf
+          self._buf_range = range(
+              aligned_start, aligned_start + self._records_per_buf
+          )
+    else:
+      data = self._reader.read([position])[0]
+      self._init_shard_stats(len(data))
+    self._last_pos = position
+    return data
+
+  def read_records(self, positions: Sequence[int]) -> list[bytes]:
+    """Reads a batch of records using adaptive readahead or parallel point reads."""
+    if not positions:
+      return []
+    has_seq_locality = len(positions) > 1 and any(
+        positions[i + 1] == positions[i] + 1 for i in range(len(positions) - 1)
+    )
+    single_in_buf_or_seq = len(positions) == 1 and (
+        self._in_buf(positions[0])
+        or (self._last_pos is not None and positions[0] == self._last_pos + 1)
+        or (self._last_pos is None and positions[0] == 0)
+    )
+    if (
+        self._is_likely_small_shard()
+        or has_seq_locality
+        or single_in_buf_or_seq
+    ):
+      if has_seq_locality and not self._in_buf(positions[0]):
+        self._last_pos = positions[0] - 1
+      return [self.read_record(p) for p in positions]
+
+    res = list(self._reader.read(list(positions)))
+    if res:
+      self._init_shard_stats(len(res[0]))
+    self._last_pos = positions[-1]
+    return res
+
+  def __getattr__(self, name: str) -> Any:
+    return getattr(self._reader, name)
+
+
+def _create_gcs_reader(filename: str, additional_reader_options: str) -> Any:
+  """Returns an ArrayRecordReader with GCS readahead defaults for `gs://`."""
+  user_opts = _parse_options_string(additional_reader_options)
+  readahead_bytes = _get_flag_value(
+      _ARRAY_RECORD_GCS_READAHEAD_BUFFER_SIZE_BYTES
+  )
+  readahead_str = user_opts.get("readahead_buffer_size", str(readahead_bytes))
+  # Default max_parallelism to 1 instead of the C++ thread-pool default (16).
+  # With max_parallelism=16, every buffer miss in ReadAheadFromBuffer schedules
+  # 16 parallel 4 MiB Range GETs (64 MiB), which are discarded on non-sequential
+  # seeks (causing up to 16x GCS QPS and memory amplification).
+  #
+  # IMPORTANT: GCS readahead relies on batched read pushdown (`__getitems__`
+  # wired to PyGrain's `SupportsBatchedReadRandomAccessDataSource._getitems`).
+  # On workloads with large shards (shard_size > readahead_buffer_size),
+  # multi-threaded prefetching without batched read pushdown borrows and returns
+  # a pooled reader for one record at a time (`__getitem__`), causing concurrent
+  # threads reading different batch offsets in the same shard to overwrite each
+  # other's `buffer_idx` and thrash the readahead buffer. With batched read
+  # pushdown, `read_records` in `__getitems__` holds the borrowed reader for the
+  # entire batch of records in that shard so the readahead buffer is consumed
+  # before the reader returns to `_BoundedReaderPool`. Do not remove batched
+  # read pushdown while GCS readahead is enabled.
+  merged_opts = {
+      "readahead_buffer_size": readahead_str,
+      "max_parallelism": "1",
+  }
+  merged_opts.update(user_opts)
+  reader = array_record_module.ArrayRecordReader(
+      filename,
+      options=_format_options_dict(merged_opts),
+  )
+  if readahead_str == "0":
+    return reader
+  try:
+    parsed_readahead = int(readahead_str)
+  except ValueError:
+    parsed_readahead = readahead_bytes
+  return _StatefulArrayRecordReader(reader, parsed_readahead)
+
+
 def _create_reader(filename: epath.PathLike, additional_reader_options: str):
   """Returns an ArrayRecordReader for the given filename."""
+  filename_str = os.fspath(filename)
+  if filename_str.startswith("gs://"):
+    return _create_gcs_reader(filename_str, additional_reader_options)
   reader_options = f"readahead_buffer_size:0,{additional_reader_options}"
   return array_record_module.ArrayRecordReader(
       filename,
@@ -234,17 +433,29 @@ class _BoundedReaderPoolBorrowContext:
   exceptions are raised within the borrowing thread's critical section.
   """
 
-  def __init__(self, pool: "_BoundedReaderPool"):
+  def __init__(self, pool: "_BoundedReaderPool", sticky: bool = True):
     self._pool = pool
+    self._sticky = sticky
     self._reader = None
 
   def __enter__(self) -> Any:
-    self._reader = self._pool.get()
-    return self._reader
+    if not self._sticky:
+      self._pool._batch_lock.acquire()  # pylint: disable=protected-access
+    try:
+      self._reader = self._pool.get(sticky=self._sticky)
+      return self._reader
+    except Exception:
+      if not self._sticky:
+        self._pool._batch_lock.release()  # pylint: disable=protected-access
+      raise
 
   def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-    if self._reader is not None:
-      self._pool.put(self._reader)
+    try:
+      if self._reader is not None:
+        self._pool.put(self._reader, sticky=self._sticky)
+    finally:
+      if not self._sticky:
+        self._pool._batch_lock.release()  # pylint: disable=protected-access
 
 
 class _BoundedReaderPool:
@@ -290,50 +501,77 @@ class _BoundedReaderPool:
     self._options_string = options_string
     self._max_size = max_size
     self._readers = collections.deque()
+    self._readers_by_tid: dict[int, Any] = {}
+    self._total_created = 0
     # Use BoundedSemaphore to strictly enforce the max_size cap
     self._semaphore = threading.BoundedSemaphore(max_size)
+    self._batch_lock = threading.Lock()
     self._lock = threading.Lock()
     self._group_size_checked = False
     self._closed = False
 
-  def get(self) -> Any:
+  def get(self, sticky: bool = True) -> Any:
     """Acquires a reader from the pool, blocking if the active reader cap is reached.
 
     If the pool is empty but the cap has not been reached, a new reader is
     instantiated. If the pool already has idle readers, one is returned
     instantly without blocking.
 
+    Args:
+      sticky: Whether to prefer thread-sticky reader affinity.
+
     Returns:
       A reader instance. Callers must use the borrow() context manager.
+
+    Raises:
+      RuntimeError: If the reader pool is already closed.
     """
     self._semaphore.acquire()
+    tid = threading.get_ident()
 
-    # Try to get an existing reader from the deque (lock-free popleft)
-    try:
-      return self._readers.popleft()
-    except IndexError:
-      pass
+    with self._lock:
+      if self._closed:
+        self._semaphore.release()
+        raise RuntimeError(
+            f"Cannot get reader from closed pool: {self._filename}"
+        )
+      if tid in self._readers_by_tid:
+        return self._readers_by_tid.pop(tid)
+      if self._readers:
+        return self._readers.popleft()
+      if not sticky and self._readers_by_tid:
+        _, reader = self._readers_by_tid.popitem()
+        return reader
+      if self._total_created >= self._max_size and self._readers_by_tid:
+        _, reader = self._readers_by_tid.popitem()
+        return reader
+      self._total_created += 1
 
-    # No idle reader; create a new one under lock
+    # Create a new reader outside lock so concurrent threads open in parallel.
     reader = None
     try:
+      reader = _create_reader(self._filename, self._options_string)
       with self._lock:
         if self._closed:
+          if reader and hasattr(reader, "close"):
+            reader.close()
+          self._total_created -= 1
           raise RuntimeError(
               f"Cannot get reader from closed pool: {self._filename}"
           )
-        reader = _create_reader(self._filename, self._options_string)
         if not self._group_size_checked:
           _check_group_size(self._filename, reader)
           self._group_size_checked = True
       return reader
     except Exception:
+      with self._lock:
+        self._total_created -= 1
       if reader and hasattr(reader, "close"):
         reader.close()
       self._semaphore.release()
       raise
 
-  def put(self, reader: Any) -> None:
+  def put(self, reader: Any, sticky: bool = True) -> None:
     """Returns a reader to the pool, recycling it for future operations.
 
     If the pool has been closed in the interim, the reader is closed
@@ -341,6 +579,7 @@ class _BoundedReaderPool:
 
     Args:
       reader: The reader instance previously obtained from `get()`.
+      sticky: Whether to store the reader under the calling thread's ID.
     """
     with self._lock:
       if self._closed:
@@ -351,34 +590,43 @@ class _BoundedReaderPool:
         self._semaphore.release()
         return
 
-      self._readers.append(reader)
+      tid = threading.get_ident()
+      if sticky and tid not in self._readers_by_tid:
+        self._readers_by_tid[tid] = reader
+      else:
+        self._readers.append(reader)
     self._semaphore.release()
 
-  def borrow(self) -> _BoundedReaderPoolBorrowContext:
+  def borrow(self, sticky: bool = True) -> _BoundedReaderPoolBorrowContext:
     """Returns a context manager to borrow a reader safely.
 
     Usage:
       with pool.borrow() as reader:
         # Perform read operations
+
+    Args:
+      sticky: Whether to use thread-sticky reader affinity.
     """
-    return _BoundedReaderPoolBorrowContext(self)
+    return _BoundedReaderPoolBorrowContext(self, sticky=sticky)
 
   def close_all(self) -> None:
     """Closes all pooled readers and prevents future allocations."""
     with self._lock:
       self._closed = True
+      readers_to_close = list(self._readers) + list(
+          self._readers_by_tid.values()
+      )
+      self._readers.clear()
+      self._readers_by_tid.clear()
 
-    while True:
-      try:
-        reader = self._readers.popleft()
-        if reader and hasattr(reader, "close"):
-          reader.close()
-      except IndexError:
-        break
+    for reader in readers_to_close:
+      if reader and hasattr(reader, "close"):
+        reader.close()
 
   def peek_readers(self) -> List[Any]:
     """Returns the list of readers (for testing only)."""
-    return list(self._readers)
+    with self._lock:
+      return list(self._readers) + list(self._readers_by_tid.values())
 
 
 class ArrayRecordDataSource:
@@ -441,8 +689,13 @@ class ArrayRecordDataSource:
       )
     self._read_instructions = _get_read_instructions(paths)
     self._paths = [ri.filename for ri in self._read_instructions]
+    default_pool_size = (
+        16 if any(p.startswith("gs://") for p in self._paths) else 1
+    )
     self._reader_pool_size = (
-        reader_pool_size or _get_flag_value(_ARRAY_RECORD_READER_POOL_SIZE) or 1  # pyrefly: ignore[bad-argument-type]
+        reader_pool_size
+        or _get_flag_value(_ARRAY_RECORD_READER_POOL_SIZE)  # pyrefly: ignore[bad-argument-type]
+        or default_pool_size
     )
 
     # Lock-free connection pool per shard
@@ -518,7 +771,7 @@ class ArrayRecordDataSource:
 
   def __getitem__(self, record_key: SupportsIndex) -> bytes:
     pool_idx, position = self._reader_idx_and_position(record_key)
-    with self._shard_pools[pool_idx].borrow() as reader:
+    with self._shard_pools[pool_idx].borrow(sticky=True) as reader:
       return self._read_record(reader, position)
 
   def __getitems__(
@@ -529,10 +782,16 @@ class ArrayRecordDataSource:
         pool_idx: int, reader_positions_and_indices: Sequence[Tuple[int, int]]
     ) -> Sequence[Tuple[Any, int]]:
       """Reads records using the given reader keeping track of the indices."""
-      with self._shard_pools[pool_idx].borrow() as reader:
-        records = []
-        for position, _ in reader_positions_and_indices:
-          records.append(self._read_record(reader, position))
+      # Holding the borrowed reader for the entire batch of positions in this
+      # shard is required for GCS readahead (`_StatefulArrayRecordReader`) on
+      # large shards so concurrent threads do not interleave per-record seeks
+      # and evict the readahead buffer before the batch finishes reading it.
+      with self._shard_pools[pool_idx].borrow(sticky=False) as reader:
+        positions = [position for position, _ in reader_positions_and_indices]
+        if hasattr(reader, "read_records"):
+          records = reader.read_records(positions)
+        else:
+          records = [self._read_record(reader, pos) for pos in positions]
         indices = [idx for _, idx in reader_positions_and_indices]
         return list(zip(records, indices))
 
@@ -573,11 +832,16 @@ class ArrayRecordDataSource:
     self.__dict__.update(state)
     # We open readers lazily when we need to read from them. Thus, we don't
     # need to re-open the same files as before pickling.
+    default_pool_size = (
+        16
+        if any(p.startswith("gs://") for p in getattr(self, "_paths", []))
+        else 1
+    )
     self._shard_pools = [
         _BoundedReaderPool(
             ri.filename,
             self._reader_options_string,
-            getattr(self, "_reader_pool_size", 1),
+            getattr(self, "_reader_pool_size", default_pool_size),
         )
         for ri in self._read_instructions
     ]

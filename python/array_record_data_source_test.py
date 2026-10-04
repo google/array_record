@@ -13,11 +13,17 @@
 
 """Tests for ArrayRecord data sources."""
 
+from collections.abc import Sequence
 from concurrent import futures
 import dataclasses
+from http import server as http_server
+import multiprocessing
 import os
 import pathlib
 import pickle
+import re
+import threading
+from typing import Any
 from unittest import mock
 
 from absl import flags
@@ -30,6 +36,125 @@ from python import array_record_module
 
 
 FLAGS = flags.FLAGS
+
+
+def _run_mock_gcs_server_process(
+    files_by_name: dict[str, bytes], conn: Any
+) -> None:
+  """Runs the mock GCS HTTP server in a child process with its own GIL."""
+  requests: list[dict[str, str | None]] = []
+  lock = threading.Lock()
+
+  class Handler(http_server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):  # pylint: disable=invalid-name
+      range_header = self.headers.get("Range")
+      with lock:
+        requests.append({"path": self.path, "range": range_header})
+
+      content = None
+      for name, data in files_by_name.items():
+        if name in self.path:
+          content = data
+          break
+      if content is None:
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return
+
+      total = len(content)
+      start, end = 0, total - 1
+      status = 200
+      if range_header:
+        status = 206
+        if m := re.fullmatch(r"bytes=-(\d+)", range_header):
+          suffix = int(m.group(1))
+          start = max(0, total - suffix)
+        elif m := re.fullmatch(r"bytes=(\d+)-(\d*)", range_header):
+          start = int(m.group(1))
+          if m.group(2):
+            end = min(total - 1, int(m.group(2)))
+
+      body = content[start : end + 1] if start < total else b""
+      self.send_response(status)
+      if start < total:
+        self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+      self.send_header("Content-Length", str(len(body)))
+      self.end_headers()
+      try:
+        self.wfile.write(body)
+      except (BrokenPipeError, ConnectionResetError):
+        pass
+
+    def log_message(self, format, *args):  # pylint: disable=redefined-builtin
+      del format, args
+
+  server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+  thread = threading.Thread(target=server.serve_forever, daemon=True)
+  thread.start()
+  conn.send(server.server_port)
+
+  while True:
+    try:
+      cmd = conn.recv()
+    except EOFError:
+      break
+    if cmd == "requests":
+      with lock:
+        conn.send(list(requests))
+    elif cmd == "clear":
+      with lock:
+        requests.clear()
+        conn.send(True)
+    elif cmd == "stop":
+      break
+
+  server.shutdown()
+  server.server_close()
+  thread.join(timeout=2.0)
+  conn.close()
+
+
+class _MockGcsServer:
+  """Local HTTP server simulating GCS Range GETs and tracking HTTP QPS."""
+
+  def __init__(self, files_by_name: dict[str, bytes]):
+    self._files_by_name = files_by_name
+    self._ctx = multiprocessing.get_context("fork")
+    self._parent_conn, self._child_conn = self._ctx.Pipe()
+    self._process = self._ctx.Process(
+        target=_run_mock_gcs_server_process,
+        args=(self._files_by_name, self._child_conn),
+        daemon=True,
+    )
+    self.port: int = 0
+
+  def __enter__(self):
+    self._process.start()
+    self._child_conn.close()
+    self.port = self._parent_conn.recv()
+    return self
+
+  @property
+  def requests(self) -> list[dict[str, str | None]]:
+    self._parent_conn.send("requests")
+    return self._parent_conn.recv()
+
+  def clear_requests(self) -> None:
+    self._parent_conn.send("clear")
+    self._parent_conn.recv()
+
+  def __exit__(self, *args):
+    try:
+      self._parent_conn.send("stop")
+    except BrokenPipeError:
+      pass
+    self._parent_conn.close()
+    self._process.join(timeout=5.0)
+    if self._process.is_alive():
+      self._process.terminate()
 
 
 @dataclasses.dataclass
