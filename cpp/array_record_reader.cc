@@ -54,6 +54,9 @@ namespace array_record {
 // 64KB
 constexpr size_t kRiegeliBlockSize = (1 << 16);
 
+// 1MB tail prefetch size when reading postscript and footer from buffered tail.
+constexpr size_t kTailPrefetchSize = (1 << 20);
+
 // This number should rarely change unless there's a new great layout design
 // that wasn't backward compatible and justifies its performance and reliability
 // worth us to implement.
@@ -118,22 +121,22 @@ class ArrayChunkOffset : public ChunkOffset {
   std::vector<uint64_t> chunk_offsets_;
 };
 
+ChunkDecoder ReadChunk(Reader& reader, size_t pos, size_t len);
+
 class OffloadedChunkOffset : public ChunkOffset {
  public:
   OffloadedChunkOffset(ArrayRecordReaderBase* base_reader,
-                       uint64_t footer_offset, uint64_t num_chunks)
+                       uint64_t footer_offset, uint64_t footer_length,
+                       uint64_t num_chunks)
       : base_reader_(base_reader),
         footer_offset_(footer_offset),
+        footer_length_(footer_length),
         num_chunks_(num_chunks) {}
 
   uint64_t operator[](size_t idx) const override {
     auto backing_reader = base_reader_->get_backing_reader();
-    auto reader = backing_reader->NewReader(footer_offset_);
-    auto chunk_reader = riegeli::DefaultChunkReader<>(reader.get());
-    Chunk chunk;
-    ChunkDecoder footer_decoder;
-    chunk_reader.ReadChunk(chunk);
-    footer_decoder.Decode(chunk);
+    ChunkDecoder footer_decoder =
+        ReadChunk(*backing_reader, footer_offset_, footer_length_);
     // First item is the footer_metadata, so we want to skip.
     footer_decoder.SetIndex(idx + 1);
     ArrayRecordFooter footer;
@@ -150,6 +153,7 @@ class OffloadedChunkOffset : public ChunkOffset {
  private:
   ArrayRecordReaderBase* base_reader_;
   uint64_t footer_offset_;
+  uint64_t footer_length_;
   uint64_t num_chunks_;
 };
 
@@ -256,6 +260,19 @@ ArrayRecordReaderBase& ArrayRecordReaderBase::operator=(
   return *this;
 }
 
+class BufferedSliceReader : public Reader {
+ public:
+  BufferedSliceReader(const char* data, size_t pos, size_t len) {
+    set_buffer(data, len);
+    set_limit_pos(pos + len);
+  }
+
+ protected:
+  bool PullSlow(size_t min_length, size_t recommended_length) override {
+    return false;
+  }
+};
+
 // After the first access to the underlying `riegeli::Reader`, the lazily
 // evaluated variables for random access are all initialized. Therefore it's
 // safe to access the reader from multiple threads later on, even though the
@@ -264,6 +281,19 @@ ChunkDecoder ReadChunk(Reader& reader, size_t pos, size_t len) {
   ChunkDecoder decoder;
   if (!reader.ok()) {
     decoder.Fail(reader.status());
+    return decoder;
+  }
+  if (pos >= reader.start_pos() && pos <= reader.limit_pos() &&
+      len <= reader.limit_pos() - pos) {
+    BufferedSliceReader buffered_slice(
+        reader.start() + (pos - reader.start_pos()), pos, len);
+    auto chunk_reader = riegeli::DefaultChunkReader<>(&buffered_slice);
+    Chunk chunk;
+    if (!chunk_reader.ReadChunk(chunk)) {
+      decoder.Fail(chunk_reader.status());
+      return decoder;
+    }
+    decoder.Decode(chunk);
     return decoder;
   }
   MaskedReader masked_reader(reader.NewReader(pos), len);
@@ -309,6 +339,7 @@ void ArrayRecordReaderBase::Initialize() {
   AR_ENDO_TASK("Reading ArrayRecord footer");
   RiegeliFooterMetadata footer_metadata;
   ChunkDecoder footer_decoder;
+  uint64_t footer_length = 0;
   {
     AR_ENDO_SCOPE("Reading postscript and footer chunk");
     if (!reader->SupportsRandomAccess()) {
@@ -326,6 +357,10 @@ void ArrayRecordReaderBase::Initialize() {
       Fail(
           InvalidArgumentError("ArrayRecord file should be at least 64KB big"));
       return;
+    }
+    if (size - reader->pos() <= kTailPrefetchSize) {
+      reader->Pull(size - reader->pos());
+      reader->set_cursor(reader->limit());
     }
     RiegeliPostscript postscript;
     auto postscript_decoder =
@@ -347,8 +382,8 @@ void ArrayRecordReaderBase::Initialize() {
     }
     auto footer_offset = postscript.footer_offset();
     state_->footer_offset = footer_offset;
-    footer_decoder = ReadChunk(*reader, footer_offset,
-                               size - kRiegeliBlockSize - footer_offset);
+    footer_length = size - kRiegeliBlockSize - footer_offset;
+    footer_decoder = ReadChunk(*reader, footer_offset, footer_length);
 
     if (!footer_decoder.ReadRecord(footer_metadata)) {
       Fail(Annotate(footer_decoder.status(),
@@ -404,7 +439,7 @@ void ArrayRecordReaderBase::Initialize() {
       } break;
       case Options::IndexStorageOption::kOffloaded:
         state_->chunk_offsets = std::make_unique<OffloadedChunkOffset>(
-            this, state_->footer_offset, num_chunks);
+            this, state_->footer_offset, footer_length, num_chunks);
         break;
     }
 
