@@ -10,6 +10,21 @@ licenses(["notice"])
 pybind_extension(
     name = "array_record_module",
     srcs = ["array_record_module.cc"],
+    # Restrict exported symbols of array_record_module.so in OSS builds to only
+    # PyInit_array_record_module. By default in OSS Bazel builds, pybind11_bazel
+    # exports all statically linked C++ symbols (including Protobuf and Abseil)
+    # globally. When imported in the same process as TensorFlow
+    # (libtensorflow_framework), duplicate Protobuf/Abseil symbols collide in
+    # the dynamic linker and cause a segmentation fault on macOS and Linux.
+    additional_linker_inputs = select({
+        "@platforms//os:linux": [":array_record_module.lds"],
+        "//conditions:default": [],
+    }),
+    linkopts = select({
+        "@platforms//os:osx": ["-Wl,-exported_symbol,_PyInit_array_record_module"],
+        "@platforms//os:linux": ["-Wl,--version-script=$(location :array_record_module.lds)"],
+        "//conditions:default": [],
+    }),
     deps = [
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings",
