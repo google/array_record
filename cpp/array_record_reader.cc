@@ -647,7 +647,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     // Regular cases.
     if (!per_chunk_indices[i].empty()) {
       uint64_t buf_size =
-          state_->ChunkEndOffset(i) - chunk_indices_per_buffer.back()[0];
+          state_->ChunkEndOffset(i) -
+          (*state_->chunk_offsets)[chunk_indices_per_buffer.back()[0]];
       if (buf_size < state_->options.readahead_buffer_size()) {
         chunk_indices_per_buffer.back().push_back(i);
       } else {

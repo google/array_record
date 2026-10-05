@@ -163,15 +163,21 @@ PYBIND11_MODULE(array_record_module, m) {
       // See write() for why this returns py::bytes.
       .def("read",
            [](ArrayRecordReaderBase& reader) {
-             absl::string_view string_view;
-             if (!reader.ReadRecord(&string_view)) {
-               if (reader.ok()) {
-                 throw std::out_of_range(absl::StrFormat(
-                     "Out of range of num_records: %d", reader.NumRecords()));
+             std::string record_copy;
+             {
+               py::gil_scoped_release scoped_release;
+               absl::string_view string_view;
+               if (!reader.ReadRecord(&string_view)) {
+                 if (reader.ok()) {
+                   throw std::out_of_range(absl::StrFormat(
+                       "Out of range of num_records: %d", reader.NumRecords()));
+                 }
+                 throw std::runtime_error(
+                     std::string(reader.status().message()));
                }
-               throw std::runtime_error(std::string(reader.status().message()));
+               record_copy.assign(string_view.data(), string_view.size());
              }
-             return py::bytes(string_view);
+             return py::bytes(record_copy);
            })
       .def("read",
            [](ArrayRecordReaderBase& reader, std::vector<uint64_t> indices) {
