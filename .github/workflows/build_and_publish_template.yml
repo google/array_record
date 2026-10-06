@@ -31,7 +31,7 @@ jobs:
         os: [ubuntu-22.04, ubuntu-22.04-arm, macos-14]
 
     env:
-      USE_BAZEL_VERSION: "7.2.1"
+      USE_BAZEL_VERSION: "7.4.1"
     steps:
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@4fd964a13a440a8aeb0be47350db2fc640f19ca8 # 0.15.0
@@ -54,7 +54,7 @@ jobs:
           export PYTHON_VERSION=${{ matrix.python-version }}
           export PYTHON_MAJOR_VERSION=$(echo $PYTHON_VERSION | cut -d. -f1)
           export PYTHON_MINOR_VERSION=$(echo $PYTHON_VERSION | cut -d. -f2)
-          export BAZEL_VERSION="7.2.1"
+          export BAZEL_VERSION="7.4.1"
           export OUTPUT_DIR="/tmp/array_record"
           export SOURCE_DIR="/tmp/array_record"
           . "${SOURCE_DIR}"'/oss/runner_common.sh'

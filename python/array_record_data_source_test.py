@@ -44,7 +44,7 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.testdata_dir = pathlib.Path(FLAGS.test_srcdir)
+    self.testdata_dir = pathlib.Path(__file__).resolve().parent / "testdata"
 
   def test_check_default_group_size(self):
     filename = os.path.join(FLAGS.test_tmpdir, "test.array_record")

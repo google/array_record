@@ -13,32 +13,25 @@
 # limitations under the License.
 
 # TODO(fchern): automate version string alignment with setup.py
-VERSION = "0.8.4"
-
 module(
     name = "array_record",
-    version = VERSION,
+    version = "0.8.4",
     repo_name = "com_google_array_record",
 )
 
+bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "rules_proto", version = "7.1.0")
 bazel_dep(name = "rules_python", version = "1.6.0")
-bazel_dep(name = "platforms", version = "0.0.11")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "protobuf", version = "31.1")
+bazel_dep(name = "boringssl", version = "0.20260413.0")
 
-# We force the protobuf version to be 28.3 because 29.x (that is required by rules_python) causes
-# segfault when importing TensorFlow due to a conflict with TF's protobuf version.
-bazel_dep(name = "protobuf", version = "28.3")
-single_version_override(
-    module_name = "protobuf",
-    version = "28.3",
-)
-
-bazel_dep(name = "googletest", version = "1.15.2")
-bazel_dep(name = "abseil-cpp", version = "20250127.1")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "abseil-cpp", version = "20250512.1")
 bazel_dep(name = "abseil-py", version = "2.1.0")
 bazel_dep(name = "eigen", version = "3.4.0.bcr.3")
 bazel_dep(name = "riegeli", version = "0.0.0-20250717-5b2e77e")
-bazel_dep(name = "pybind11_bazel", version = "2.12.0")
+bazel_dep(name = "pybind11_bazel", version = "2.13.6")
 
 SUPPORTED_PYTHON_VERSIONS = [
     "3.11",
@@ -48,9 +41,6 @@ SUPPORTED_PYTHON_VERSIONS = [
 ]
 
 DEFAULT_PYTHON_VERSION = "3.13"
-
-python_configure = use_extension("@pybind11_bazel//:python_configure.bzl", "extension")
-use_repo(python_configure, "local_config_python")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 
