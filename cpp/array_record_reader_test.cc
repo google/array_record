@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <random>
@@ -27,9 +28,11 @@ limitations under the License.
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "absl/base/thread_annotations.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
 #include "cpp/array_record_writer.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
@@ -37,6 +40,8 @@ limitations under the License.
 #include "cpp/thread_pool.h"
 #include "riegeli/base/maker.h"
 #include "riegeli/base/types.h"
+#include "riegeli/bytes/buffer_options.h"
+#include "riegeli/bytes/buffered_reader.h"
 #include "riegeli/bytes/chain_writer.h"
 #include "riegeli/bytes/reader.h"
 #include "riegeli/bytes/string_reader.h"
@@ -784,6 +789,296 @@ TEST(ArrayRecordReaderTest, FooterEndsAtExactBlockBoundaryWithoutPadding) {
     ASSERT_TRUE(reader.ReadRecord(&record_view));
     EXPECT_EQ(record_view, expected_record);
     ASSERT_TRUE(reader.Close());
+  }
+}
+
+struct SubReaderTracker {
+  absl::Mutex mu;
+  int seek_behind_buffer_count ABSL_GUARDED_BY(mu) = 0;
+};
+
+// BufferedReader test double modeling GcsReader: bounded sub-readers set
+// exact_size(min(data.size(), initial_pos + max_length)). Because MaskedReader
+// destroys sub-readers without calling Close(), over-buffering on sub-readers
+// is caught by ~BoundedSubReaderTestReader() checking available() > 0, while
+// SeekBehindBuffer() catches any extra stream resets on Close() or seeks.
+class BoundedSubReaderTestReader : public riegeli::BufferedReader {
+ public:
+  BoundedSubReaderTestReader(absl::string_view data, SubReaderTracker* tracker)
+      : BoundedSubReaderTestReader(data, 0, data.size(), tracker) {}
+
+  BoundedSubReaderTestReader(absl::string_view data,
+                             riegeli::Position initial_pos,
+                             riegeli::Position end_pos,
+                             SubReaderTracker* tracker)
+      : riegeli::BufferedReader(
+            riegeli::BufferOptions().set_min_buffer_size(64 << 10)),
+        data_(data),
+        end_pos_(std::min<riegeli::Position>(end_pos, data.size())),
+        tracker_(tracker) {
+    set_limit_pos(std::min<riegeli::Position>(initial_pos, end_pos_));
+    set_exact_size(end_pos_);
+    BeginRun();
+  }
+
+  ~BoundedSubReaderTestReader() override {
+  }
+
+  bool SupportsRandomAccess() override { return true; }
+  bool SupportsNewReader() override { return true; }
+
+ protected:
+  bool ReadInternal(size_t min_length, size_t max_length, char* dest) override {
+    if (limit_pos() >= end_pos_) {
+      return false;
+    }
+    const size_t to_copy =
+        std::min<size_t>(max_length, end_pos_ - limit_pos());
+    std::memcpy(dest, data_.data() + limit_pos(), to_copy);
+    move_limit_pos(to_copy);
+    return to_copy >= min_length;
+  }
+
+  bool SeekBehindBuffer(riegeli::Position new_pos) override {
+    if (tracker_ != nullptr) {
+      absl::MutexLock lock(tracker_->mu);
+      ++tracker_->seek_behind_buffer_count;
+    }
+    set_limit_pos(std::min<riegeli::Position>(new_pos, end_pos_));
+    return new_pos <= end_pos_;
+  }
+
+  std::unique_ptr<riegeli::Reader> NewReaderImpl(
+      riegeli::Position initial_pos) override {
+    return std::make_unique<BoundedSubReaderTestReader>(data_, initial_pos,
+                                                        end_pos_, tracker_);
+  }
+
+ private:
+  absl::string_view data_;
+  riegeli::Position end_pos_;
+  SubReaderTracker* tracker_;
+};
+
+std::string EncodeSixRecordTestFile() {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(2).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  for (int i = 0; i < 6; ++i) {
+    EXPECT_TRUE(writer.WriteRecord(std::string(1024, 'a' + i)));
+  }
+  EXPECT_TRUE(writer.Close());
+  return encoded;
+}
+
+std::string MakeMalformedPostscriptFile(uint64_t footer_offset) {
+  constexpr size_t kBlockSize = 1 << 16;
+  std::string postscript_block;
+  RiegeliPostscript postscript;
+  postscript.set_magic(0x71930e704fdae05eULL);
+  postscript.set_footer_offset(footer_offset);
+  riegeli::SimpleEncoder postscript_encoder(
+      riegeli::CompressorOptions().set_uncompressed());
+  EXPECT_TRUE(postscript_encoder.AddRecord(postscript.SerializeAsString()));
+  riegeli::Chunk postscript_chunk;
+  riegeli::ChunkType chunk_type;
+  uint64_t num_records = 0;
+  uint64_t decoded_data_size = 0;
+  riegeli::ChainWriter<> chain_writer(&postscript_chunk.data);
+  EXPECT_TRUE(postscript_encoder.EncodeAndClose(
+      chain_writer, chunk_type, num_records, decoded_data_size));
+  EXPECT_TRUE(chain_writer.Close());
+  postscript_chunk.header = riegeli::ChunkHeader(
+      postscript_chunk.data, chunk_type, num_records, decoded_data_size);
+  riegeli::StringWriter<> string_writer(&postscript_block);
+  riegeli::DefaultChunkWriter<> chunk_writer(&string_writer);
+  EXPECT_TRUE(chunk_writer.WriteChunk(postscript_chunk));
+  EXPECT_TRUE(chunk_writer.Close());
+  EXPECT_TRUE(string_writer.Close());
+  postscript_block.resize(kBlockSize, '\0');
+
+  std::string malformed_file(kBlockSize, '\0');
+  malformed_file.append(postscript_block);
+  return malformed_file;
+}
+
+TEST(ArrayRecordReaderTest,
+     BoundedSubReadersInOffloadedInitializeAndSeekRead) {
+  const std::string encoded = EncodeSixRecordTestFile();
+  SubReaderTracker tracker;
+  auto options = ArrayRecordReaderBase::Options()
+                     .set_index_storage_option(IndexStorageOption::kOffloaded)
+                     .set_footer_prefetch_bytes(0)
+                     .set_readahead_buffer_size(0);
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<BoundedSubReaderTestReader>(encoded, &tracker), options,
+      ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  {
+    absl::MutexLock lock(tracker.mu);
+    EXPECT_EQ(tracker.seek_behind_buffer_count, 0);
+  }
+
+  absl::string_view rec_view;
+  ASSERT_TRUE(reader.SeekRecord(4));
+  ASSERT_TRUE(reader.ReadRecord(&rec_view));
+  EXPECT_EQ(rec_view, std::string(1024, 'e'));
+  ASSERT_TRUE(reader.Close());
+  {
+    absl::MutexLock lock(tracker.mu);
+    EXPECT_EQ(tracker.seek_behind_buffer_count, 0);
+  }
+}
+
+TEST(ArrayRecordReaderTest, BoundedSubReadersInParallelReadRecords) {
+  const std::string encoded = EncodeSixRecordTestFile();
+  SubReaderTracker tracker;
+  auto options = ArrayRecordReaderBase::Options()
+                     .set_footer_prefetch_bytes(0)
+                     .set_readahead_buffer_size(0);
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<BoundedSubReaderTestReader>(encoded, &tracker), options,
+      ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+
+  std::vector<std::string> all_records(6);
+  ASSERT_TRUE(
+      reader
+          .ParallelReadRecords([&](uint64_t idx, absl::string_view rec) {
+            all_records[idx] = std::string(rec);
+            return absl::OkStatus();
+          })
+          .ok());
+  EXPECT_EQ(all_records,
+            (std::vector<std::string>{
+                std::string(1024, 'a'), std::string(1024, 'b'),
+                std::string(1024, 'c'), std::string(1024, 'd'),
+                std::string(1024, 'e'), std::string(1024, 'f')}));
+  ASSERT_TRUE(reader.Close());
+  {
+    absl::MutexLock lock(tracker.mu);
+    EXPECT_EQ(tracker.seek_behind_buffer_count, 0);
+  }
+}
+
+TEST(ArrayRecordReaderTest, BoundedSubReadersInParallelReadRecordsInRange) {
+  const std::string encoded = EncodeSixRecordTestFile();
+  SubReaderTracker tracker;
+  auto options = ArrayRecordReaderBase::Options()
+                     .set_footer_prefetch_bytes(0)
+                     .set_readahead_buffer_size(0);
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<BoundedSubReaderTestReader>(encoded, &tracker), options,
+      ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+
+  std::vector<std::string> range_records(4);
+  ASSERT_TRUE(
+      reader
+          .ParallelReadRecordsInRange(
+              1, 5,
+              [&](uint64_t idx, absl::string_view rec) {
+                range_records[idx - 1] = std::string(rec);
+                return absl::OkStatus();
+              })
+          .ok());
+  EXPECT_EQ(range_records,
+            (std::vector<std::string>{
+                std::string(1024, 'b'), std::string(1024, 'c'),
+                std::string(1024, 'd'), std::string(1024, 'e')}));
+  ASSERT_TRUE(reader.Close());
+  {
+    absl::MutexLock lock(tracker.mu);
+    EXPECT_EQ(tracker.seek_behind_buffer_count, 0);
+  }
+}
+
+TEST(ArrayRecordReaderTest, BoundedSubReadersInParallelReadRecordsWithIndices) {
+  const std::string encoded = EncodeSixRecordTestFile();
+  SubReaderTracker tracker;
+  auto options = ArrayRecordReaderBase::Options()
+                     .set_footer_prefetch_bytes(0)
+                     .set_readahead_buffer_size(0);
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<BoundedSubReaderTestReader>(encoded, &tracker), options,
+      ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+
+  const std::vector<uint64_t> indices = {5, 2};
+  std::vector<std::string> fetched_records(2);
+  ASSERT_TRUE(
+      reader
+          .ParallelReadRecordsWithIndices(
+              indices,
+              [&](uint64_t pos_idx, absl::string_view rec) {
+                fetched_records[pos_idx] = std::string(rec);
+                return absl::OkStatus();
+              })
+          .ok());
+  EXPECT_EQ(fetched_records,
+            (std::vector<std::string>{std::string(1024, 'f'),
+                                      std::string(1024, 'c')}));
+  ASSERT_TRUE(reader.Close());
+  {
+    absl::MutexLock lock(tracker.mu);
+    EXPECT_EQ(tracker.seek_behind_buffer_count, 0);
+  }
+}
+
+TEST(ArrayRecordReaderTest, BoundedSubReadersInSingleThreadedReadRecord) {
+  const std::string encoded = EncodeSixRecordTestFile();
+  SubReaderTracker tracker;
+  auto options = ArrayRecordReaderBase::Options()
+                     .set_footer_prefetch_bytes(0)
+                     .set_readahead_buffer_size(0);
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<BoundedSubReaderTestReader>(encoded, &tracker), options,
+      /*pool=*/nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+
+  absl::string_view rec_view;
+  ASSERT_TRUE(reader.ReadRecord(&rec_view));
+  EXPECT_EQ(rec_view, std::string(1024, 'a'));
+  ASSERT_TRUE(reader.Close());
+  {
+    absl::MutexLock lock(tracker.mu);
+    EXPECT_EQ(tracker.seek_behind_buffer_count, 0);
+  }
+}
+
+TEST(ArrayRecordReaderTest,
+     MalformedFooterOffsetAtOrBeyondPostscriptFailsCleanly) {
+  constexpr uint64_t kPostscriptOffset = 1 << 16;
+  // Exact boundary (footer_offset == postscript_offset => 0-byte footer).
+  {
+    const std::string empty_footer_file =
+        MakeMalformedPostscriptFile(kPostscriptOffset);
+    auto reader = ArrayRecordReader(
+        riegeli::Maker<riegeli::StringReader>(empty_footer_file),
+        ArrayRecordReaderBase::Options(), nullptr);
+    EXPECT_FALSE(reader.status().ok());
+    EXPECT_EQ(reader.status().code(), absl::StatusCode::kInvalidArgument)
+        << reader.status().message();
+    EXPECT_NE(reader.status().message().find("footer_offset"),
+              absl::string_view::npos)
+        << reader.status().message();
+  }
+
+  // Off-by-one past postscript_offset (footer_offset == postscript_offset + 1).
+  {
+    const std::string past_postscript_file =
+        MakeMalformedPostscriptFile(kPostscriptOffset + 1);
+    auto reader = ArrayRecordReader(
+        riegeli::Maker<riegeli::StringReader>(past_postscript_file),
+        ArrayRecordReaderBase::Options(), nullptr);
+    EXPECT_FALSE(reader.status().ok());
+    EXPECT_EQ(reader.status().code(), absl::StatusCode::kInvalidArgument)
+        << reader.status().message();
+    EXPECT_NE(reader.status().message().find("footer_offset"),
+              absl::string_view::npos)
+        << reader.status().message();
   }
 }
 
