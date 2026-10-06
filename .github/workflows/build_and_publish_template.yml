@@ -34,16 +34,16 @@ jobs:
       USE_BAZEL_VERSION: "7.2.1"
     steps:
       - name: Set up Bazel
-        uses: bazel-contrib/setup-bazel@0.15.0
+        uses: bazel-contrib/setup-bazel@4fd964a13a440a8aeb0be47350db2fc640f19ca8 # 0.15.0
       - name: Check Bazel installation
         run: |
           which bazel
           bazel version
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: "actions/checkout@v3"
+      - uses: actions/checkout@a37ce9120846195fa4ece8f58b268e6043cb2f26 # v3
       - name: Create directory
         run: |
           mkdir -p /tmp/array_record
@@ -60,7 +60,7 @@ jobs:
           . "${SOURCE_DIR}"'/oss/runner_common.sh'
           build_and_test_array_record
       - name: Upload ArrayRecord artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: built-array-record-wheels-${{ matrix.os }}-${{ matrix.python-version }}
           path: /tmp/array_record/all_dist/*.whl
@@ -76,13 +76,13 @@ jobs:
       url: ${{ inputs.pypi_project_url }}
     steps:
       - name: Download ArrayRecord artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: built-array-record-wheels-*
           path: dist/
           merge-multiple: true
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           attestations: false
           verbose: true
