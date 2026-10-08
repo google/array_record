@@ -1,13 +1,189 @@
+# Copyright 2025 The ArrayRecord Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: Build and Publish Release
 
-on: workflow_dispatch
+# Triggers automatically when a commit touching `MODULE.bazel` is pushed to
+# `main`, or manually via `workflow_dispatch`:
+# 1. `check-release`: Reads `version = "..."` from `MODULE.bazel` (single source
+#    of truth also read by `setup.py`). If `v${VERSION}` already exists on GitHub
+#    (e.g. when `MODULE.bazel` dependencies are updated without bumping `version`),
+#    exits 0 cleanly without rebuilding wheels or overwriting the release.
+# 2. `build-and-publish-wheels`: Builds and tests wheels across all supported OS
+#    and Python versions and publishes them to PyPI via Trusted Publishing.
+# 3. `cut-github-release`: Cuts the `v${VERSION}` GitHub Release with a
+#    deterministic `array_record-v${VERSION}.tar.gz` source archive.
+# 4. `publish-bcr`: Opens a pull request to `bazelbuild/bazel-central-registry`.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'MODULE.bazel'
+  workflow_dispatch:
+    inputs:
+      registry_fork:
+        description: 'Fork of bazel-central-registry to push to'
+        required: false
+        default: 'samos123/bazel-central-registry'
+        type: string
+      overwrite_existing:
+        description: 'Overwrite existing GitHub release/tag if it already exists'
+        required: false
+        default: false
+        type: boolean
+      skip_wheels:
+        description: 'Skip wheel build/PyPI upload (only cut GitHub Release and publish to BCR)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
-  call-workflow:
+  check-release:
+    name: Check Release Version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Check MODULE.bazel version and existing tags
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OVERWRITE_EXISTING: ${{ inputs.overwrite_existing || 'false' }}
+        run: |
+          set -euo pipefail
+
+          VERSION="$(sed -n '/module(/,/)/s/.*version *= *"\([^"]*\)".*/\1/p' MODULE.bazel | head -n 1)"
+          if [ -z "${VERSION}" ] || [ "${VERSION}" = "0.0.0" ]; then
+            echo "MODULE.bazel version is '${VERSION:-empty}'; skipping release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG="v${VERSION}"
+
+          # Never overwrite an already-published release on push (e.g. when MODULE.bazel
+          # deps are edited without bumping the module version).
+          if gh release view "${TAG}" >/dev/null 2>&1 || git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
+            if [ "${OVERWRITE_EXISTING}" != "true" ]; then
+              echo "Release/tag ${TAG} already exists; skipping."
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "New release version detected: ${TAG}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
+  build-and-publish-wheels:
+    needs: [check-release]
+    if: needs.check-release.outputs.should_release == 'true' && !inputs.skip_wheels
     uses: ./.github/workflows/build_and_publish_template.yml
     permissions:
       contents: read
       id-token: write
     with:
       pypi_project_url: https://pypi.org/project/array-record
-      upload_wheels: true
+      upload_wheels: ${{ github.repository == 'google/array_record' }}
+
+  cut-github-release:
+    name: Cut GitHub Release
+    needs: [check-release, build-and-publish-wheels]
+    if: |
+      always() &&
+      needs.check-release.outputs.should_release == 'true' &&
+      (needs.build-and-publish-wheels.result == 'success' || needs.build-and-publish-wheels.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release with source archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check-release.outputs.tag }}
+          OVERWRITE_EXISTING: ${{ inputs.overwrite_existing || 'false' }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${TAG}" >/dev/null 2>&1 || git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
+            if [ "${OVERWRITE_EXISTING}" = "true" ]; then
+              echo "overwrite_existing=true: deleting existing release/tag ${TAG}..."
+              gh release delete "${TAG}" --cleanup-tag --yes || true
+              git push --delete origin "${TAG}" || true
+            else
+              echo "Release/tag ${TAG} already exists; skipping."
+              exit 0
+            fi
+          fi
+
+          echo "Creating release ${TAG}..."
+
+          ARCHIVE="array_record-${TAG}.tar.gz"
+          git archive --format=tar.gz --prefix="array_record-${TAG}/" -o "${ARCHIVE}" HEAD
+
+          NOTES_FILE="$(mktemp)"
+          git log -1 --format=%b HEAD | sed '/^PiperOrigin-RevId:/d' > "${NOTES_FILE}"
+          if [ -n "$(sed '/^[[:space:]]*$/d' "${NOTES_FILE}")" ]; then
+            gh release create "${TAG}" "${ARCHIVE}" \
+              --target "${GITHUB_SHA}" \
+              --title "${TAG}" \
+              --notes-file "${NOTES_FILE}"
+          else
+            gh release create "${TAG}" "${ARCHIVE}" \
+              --target "${GITHUB_SHA}" \
+              --title "${TAG}" \
+              --generate-notes || \
+            gh release create "${TAG}" "${ARCHIVE}" \
+              --target "${GITHUB_SHA}" \
+              --title "${TAG}" \
+              --notes "Release ${TAG}"
+          fi
+
+  publish-bcr:
+    name: Publish to Bazel Central Registry
+    needs: [check-release, cut-github-release]
+    if: needs.cut-github-release.result == 'success'
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: bazel-contrib/publish-to-bcr/.github/workflows/publish.yaml@ad6879fd015a01c3e3b1b318fe3c061f928ac2fb # v1.4.2
+    with:
+      tag_name: ${{ needs.check-release.outputs.tag }}
+      # `google/bazel-central-registry` does not exist on GitHub; `publish.yaml`
+      # pushes a release branch to `registry_fork` using `BCR_PUBLISH_TOKEN` and
+      # opens a PR to `bazelbuild/bazel-central-registry`. Using a fork owned by a
+      # maintainer listed in `.bcr/metadata.template.json` (`samos123`) allows BCR CI
+      # to auto-trust and run presubmit verification without manual intervention.
+      registry_fork: ${{ inputs.registry_fork || 'samos123/bazel-central-registry' }}
+      attest: false
+      draft: false
+    secrets:
+      publish_token: ${{ secrets.BCR_PUBLISH_TOKEN }}
