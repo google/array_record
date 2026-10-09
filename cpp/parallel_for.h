@@ -139,7 +139,7 @@ inline absl::Status ParallelForWithStatus(
         }
         absl::Status status = Func(idx);
         if (!status.ok()) {
-          absl::MutexLock lock(&mutex);
+          absl::MutexLock lock(mutex);
           finite_check_status = status;
           is_ok_status.store(false, std::memory_order_relaxed);
         }
@@ -199,8 +199,8 @@ class ParallelForClosure {
     // that there is no work left, and the final task to schedule will delete
     // this heap-allocated object.
     //
-    termination_mutex_.WriterLock();
-    termination_mutex_.WriterUnlock();
+    termination_mutex_.lock();
+    termination_mutex_.unlock();
 
     // Drop main thread's reference.
     if (--reference_count_ == 0) delete this;
@@ -210,9 +210,9 @@ class ParallelForClosure {
     // Do work on a child thread. Before starting any work, each child thread
     // takes a reader lock, preventing the main thread from finishing while
     // any child threads are still executing in the core loop.
-    termination_mutex_.ReaderLock();
+    termination_mutex_.lock_shared();
     DoWork();
-    termination_mutex_.ReaderUnlock();
+    termination_mutex_.unlock_shared();
 
     // Drop child thread's reference.
     if (--reference_count_ == 0) delete this;
