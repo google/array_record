@@ -78,7 +78,7 @@ class TriStatePtr {
   TriStatePtr() = default;
 
   ~TriStatePtr() {
-    absl::MutexLock l(&mu_);
+    absl::MutexLock l(mu_);
     mu_.Await(absl::Condition(
         +[](State* sharing_state) { return *sharing_state == State::kNoRef; },
         &state_));
@@ -103,7 +103,7 @@ class TriStatePtr {
       int32_t ref_count =
           parent_->ref_count_.fetch_sub(1, std::memory_order_acq_rel) - 1;
       if (ref_count == 0) {
-        absl::MutexLock l(&parent_->mu_);
+        absl::MutexLock l(parent_->mu_);
         parent_->state_ = State::kNoRef;
       }
     }
@@ -123,7 +123,7 @@ class TriStatePtr {
     UniqueRef(TriStatePtr<BaseT>* parent) : parent_(parent) {}
 
     ~UniqueRef() {
-      absl::MutexLock l(&parent_->mu_);
+      absl::MutexLock l(parent_->mu_);
       parent_->state_ = State::kNoRef;
     }
 
@@ -137,7 +137,7 @@ class TriStatePtr {
   };
 
   SharedRef MakeShared() {
-    absl::MutexLock l(&mu_);
+    absl::MutexLock l(mu_);
     mu_.Await(absl::Condition(
         +[](State* sharing_state) { return *sharing_state != State::kUnique; },
         &state_));
@@ -147,7 +147,7 @@ class TriStatePtr {
   }
 
   UniqueRef WaitAndMakeUnique() {
-    absl::MutexLock l(&mu_);
+    absl::MutexLock l(mu_);
     mu_.Await(absl::Condition(
         +[](State* sharing_state) { return *sharing_state == State::kNoRef; },
         &state_));
@@ -162,7 +162,7 @@ class TriStatePtr {
   };
 
   State state() const {
-    absl::MutexLock l(&mu_);
+    absl::MutexLock l(mu_);
     return state_;
   }
 

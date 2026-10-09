@@ -137,24 +137,24 @@ class SequencedChunkWriterBase : public riegeli::Object {
 
   // Pads to 64KB boundary for future chunk submission. (Default false).
   void set_pad_to_block_boundary(bool pad_to_block_boundary) {
-    absl::MutexLock l(&mu_);
+    absl::MutexLock l(mu_);
     pad_to_block_boundary_ = pad_to_block_boundary;
   }
   bool pad_to_block_boundary() {
-    absl::MutexLock l(&mu_);
+    absl::MutexLock l(mu_);
     return pad_to_block_boundary_;
   }
 
   // Setup a callback for each committed chunk. See CommitChunkCallback
   // comments for details.
   void set_submit_chunk_callback(SubmitChunkCallback* callback) {
-    absl::MutexLock l(&mu_);
+    absl::MutexLock l(mu_);
     callback_ = callback;
   }
 
   // Guard the status access.
   absl::Status status() const {
-    absl::ReaderMutexLock l(&mu_);
+    absl::ReaderMutexLock l(mu_);
     return riegeli::Object::status();
   }
 
