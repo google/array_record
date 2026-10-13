@@ -20,7 +20,7 @@ function main() {
   write_to_bazelrc "build --enable_platform_specific_config"
   write_to_bazelrc "build --@rules_python//python/config_settings:python_version=${PYTHON_VERSION}"
   write_to_bazelrc "test --@rules_python//python/config_settings:python_version=${PYTHON_VERSION}"
-  write_to_bazelrc "test --action_env PYTHON_VERSION=${PYTHON_VERSION}"
+  write_to_bazelrc "build --action_env PYTHON_VERSION=${PYTHON_VERSION}"
   write_to_bazelrc "test --test_timeout=300"
 
   write_to_bazelrc "build -c opt"
@@ -32,6 +32,7 @@ function main() {
   write_to_bazelrc "build --cxxopt=-Wno-deprecated-declarations --host_cxxopt=-Wno-deprecated-declarations"
   write_to_bazelrc "build --cxxopt=-Wno-parentheses --host_cxxopt=-Wno-parentheses"
   write_to_bazelrc "build --cxxopt=-Wno-sign-compare --host_cxxopt=-Wno-sign-compare"
+  write_to_bazelrc 'build --per_file_copt=external/.*@-O1,-g0 --host_copt=-O1 --host_copt=-g0'
 
   PLATFORM="$(uname)"
   if [ "${PLATFORM}" = "Darwin" ] && [ "$(uname -m)" = "x86_64" ]; then
@@ -46,8 +47,13 @@ function main() {
 
   export USE_BAZEL_VERSION="${BAZEL_VERSION}"
   bazel clean
-  bazel build ... --action_env MACOSX_DEPLOYMENT_TARGET='11.0' --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
-  bazel test --verbose_failures --test_output=errors ... --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
+  if [ "${PLATFORM}" != "Darwin" ] && (( "${PYTHON_MINOR_VERSION}" == 14 )); then
+    BAZEL_TARGETS="//cpp/... //python/..."
+  else
+    BAZEL_TARGETS="//python/..."
+  fi
+  bazel build ${BAZEL_TARGETS} --action_env MACOSX_DEPLOYMENT_TARGET='11.0' --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
+  bazel test --verbose_failures --test_output=errors ${BAZEL_TARGETS} --action_env MACOSX_DEPLOYMENT_TARGET='11.0' --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
 
   DEST="/tmp/array_record/all_dist"
   # Create the directory, then do dirname on a non-existent file inside it to

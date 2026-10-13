@@ -32,11 +32,13 @@ pybind_extension(
         "//cpp:array_record_reader",
         "//cpp:array_record_writer",
         "//cpp:thread_pool",
+        "@google_cloud_cpp//:storage_grpc",
         "@riegeli//riegeli/base:initializer",
         "@riegeli//riegeli/bytes:fd_reader",
         "@riegeli//riegeli/bytes:fd_writer",
         "@riegeli//riegeli/gcs:gcs_object",
         "@riegeli//riegeli/gcs:gcs_reader",
+        "@riegeli//riegeli/gcs:gcs_writer",
     ],
 )
 
