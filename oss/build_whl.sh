@@ -34,6 +34,10 @@ function main() {
   write_to_bazelrc "build --cxxopt=-Wno-sign-compare --host_cxxopt=-Wno-sign-compare"
 
   PLATFORM="$(uname)"
+  if [ "${PLATFORM}" = "Darwin" ] && [ "$(uname -m)" = "x86_64" ]; then
+    write_to_bazelrc 'build --per_file_copt=.*crc32c_sse42\.cc@-msse4.2'
+    write_to_bazelrc 'build --host_per_file_copt=.*crc32c_sse42\.cc@-msse4.2'
+  fi
 
   if [ -n "${CROSSTOOL_TOP}" ]; then
     write_to_bazelrc "build --crosstool_top=${CROSSTOOL_TOP}"
@@ -97,6 +101,7 @@ function main() {
   $PYTHON_BIN -m pip install "${WHEEL_FILE}"
   $PYTHON_BIN -c 'import array_record'
   $PYTHON_BIN -c 'from array_record.python import array_record_data_source'
+  $PYTHON_BIN oss/test_bcr_presubmit.py
   # TF does not have a Python 3.14 wheel yet.
   if (( "${PYTHON_MINOR_VERSION}" < 14 )); then
     $PYTHON_BIN -m pip install jax "tensorflow>=2.20.0" grain --only-binary :all:

@@ -13,17 +13,16 @@
 # limitations under the License.
 
 matrix:
-  platform:
+  unix_platform:
     - debian11
     - ubuntu2204
-    - macos
     - macos_arm64
   bazel:
     - 7.x
 tasks:
   verify_targets:
     name: Verify build and test targets
-    platform: ${{ platform }}
+    platform: ${{ unix_platform }}
     bazel: ${{ bazel }}
     # BCR runs `verify_targets` from a temporary anonymous root module, so any
     # module-local `.bazelrc` is ignored. Explicitly pass C++17 flags required
@@ -36,6 +35,29 @@ tasks:
       - --host_cxxopt=-std=c++17
     # External consumers without an explicit `repo_name` override resolve this
     # module under its module name (`@array_record`), not `com_google_array_record`.
+    build_targets:
+      - '@array_record//cpp/...'
+      - '@array_record//python/...'
+    test_targets:
+      - '@array_record//cpp/...'
+      - '@array_record//python/...'
+  verify_targets_macos_x86_64:
+    name: Verify build and test targets (macOS x86_64)
+    platform: macos
+    bazel: ${{ bazel }}
+    # On Intel macOS (`--cpu=darwin_x86_64`), `crc32c@1.1.0` in BCR only matches
+    # legacy `--cpu=darwin` for `-msse4.2`, causing `crc32c_sse42.cc` to fail on
+    # `_mm_crc32_u8`. Inject `-msse4.2` solely for `crc32c_sse42.cc` on x86_64.
+    build_flags:
+      - --cxxopt=-std=c++17
+      - --host_cxxopt=-std=c++17
+      - --per_file_copt=.*crc32c_sse42\.cc@-msse4.2
+      - --host_per_file_copt=.*crc32c_sse42\.cc@-msse4.2
+    test_flags:
+      - --cxxopt=-std=c++17
+      - --host_cxxopt=-std=c++17
+      - --per_file_copt=.*crc32c_sse42\.cc@-msse4.2
+      - --host_per_file_copt=.*crc32c_sse42\.cc@-msse4.2
     build_targets:
       - '@array_record//cpp/...'
       - '@array_record//python/...'
