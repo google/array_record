@@ -28,6 +28,7 @@ limitations under the License.
 #include "cpp/array_record_reader.h"
 #include "cpp/array_record_writer.h"
 #include "cpp/thread_pool.h"
+#include "google/cloud/storage/grpc_plugin.h"
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/pytypes.h"
@@ -37,8 +38,20 @@ limitations under the License.
 #include "riegeli/bytes/fd_writer.h"
 #include "riegeli/gcs/gcs_object.h"
 #include "riegeli/gcs/gcs_reader.h"
+#include "riegeli/gcs/gcs_writer.h"
 
 namespace py = pybind11;
+
+namespace {
+
+// Returns a GCS client using gRPC by default. Setting the environment variable
+// GOOGLE_CLOUD_CPP_STORAGE_GRPC_CONFIG=none disables gRPC and falls back to the
+// HTTP/REST client.
+google::cloud::storage::Client GetGcsClient() {
+  return google::cloud::storage::MakeGrpcClient();
+}
+
+}  // namespace
 
 PYBIND11_MODULE(array_record_module, m) {
   using array_record::ArrayRecordReaderBase;
@@ -55,8 +68,18 @@ PYBIND11_MODULE(array_record_module, m) {
              }
              riegeli::FdWriterBase::Options file_writer_options;
              file_writer_options.set_buffer_size(size_t{16} << 20);
+             // Increasing the buffer size reduces GCS write QPS.
+             riegeli::GcsWriter::Options gcs_writer_options;
+             gcs_writer_options.set_buffer_size(size_t{64} << 20);  // 64MB
              // Release the GIL because IO is time consuming.
              py::gil_scoped_release scoped_release;
+             if (absl::StartsWith(path, "gs://")) {
+               return new array_record::ArrayRecordWriter(
+                   riegeli::Maker<riegeli::GcsWriter>(
+                       GetGcsClient(), riegeli::GcsObject(path),
+                       std::move(gcs_writer_options)),
+                   status_or_option.value());
+             }
              return new array_record::ArrayRecordWriter(
                  riegeli::Maker<riegeli::FdWriter>(
                      path, std::move(file_writer_options)),
@@ -66,6 +89,7 @@ PYBIND11_MODULE(array_record_module, m) {
       .def("ok", &ArrayRecordWriterBase::ok)
       .def("close",
            [](ArrayRecordWriterBase& writer) {
+             py::gil_scoped_release scoped_release;
              if (!writer.Close()) {
                throw std::runtime_error(std::string(writer.status().message()));
              }
@@ -75,6 +99,7 @@ PYBIND11_MODULE(array_record_module, m) {
       // most users to store binary data (e.g. serialized protocol buffers).
       // We cannot know if a users wants to write+read unicode and forcing users
       // to encode() their unicode strings avoids accidental conversions.
+      // TODO: Release the GIL during WriteRecord when flushing to I/O.
       .def("write", [](ArrayRecordWriterBase& writer, py::bytes record) {
         if (!writer.WriteRecord(record)) {
           throw std::runtime_error(std::string(writer.status().message()));
@@ -102,8 +127,8 @@ PYBIND11_MODULE(array_record_module, m) {
              if (absl::StartsWith(path, "gs://")) {
                return new array_record::ArrayRecordReader(
                    riegeli::Maker<riegeli::GcsReader>(
-                       google::cloud::storage::Client(),
-                       riegeli::GcsObject(path), std::move(gcs_reader_options)),
+                       GetGcsClient(), riegeli::GcsObject(path),
+                       std::move(gcs_reader_options)),
                    status_or_option.value(),
                    array_record::ArrayRecordGlobalPool());
              } else {
