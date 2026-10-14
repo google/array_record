@@ -14,12 +14,90 @@
 
 """Tests for array_record_module."""
 
+from concurrent import futures
+from http import server
 import os
+import re
+import threading
 
 from absl.testing import absltest
 
 from python.array_record_module import ArrayRecordReader
 from python.array_record_module import ArrayRecordWriter
+
+
+class _MockGcsServer:
+  """Minimal HTTP server emulating the GCS JSON API media download endpoint."""
+
+  def __init__(self, payload: bytes):
+    self.payload = payload
+    self.requests = []
+    self.tcp_connections = 0
+    self.aborted_streams = 0
+    self._lock = threading.Lock()
+    parent = self
+
+    class Handler(server.BaseHTTPRequestHandler):
+      protocol_version = "HTTP/1.1"
+
+      def handle(self):
+        with parent._lock:
+          parent.tcp_connections += 1
+        try:
+          super().handle()
+        except ConnectionResetError:
+          with parent._lock:
+            parent.aborted_streams += 1
+
+      def do_GET(self):  # pylint: disable=invalid-name
+        range_header = self.headers.get("Range")
+        with parent._lock:
+          parent.requests.append({
+              "path": self.path,
+              "range": range_header,
+          })
+        total = len(parent.payload)
+        start = 0
+        end = total - 1
+        status = 200
+        if range_header:
+          m_last = re.fullmatch(r"bytes=-(\d+)", range_header)
+          m_range = re.fullmatch(r"bytes=(\d+)-(\d*)", range_header)
+          if m_last:
+            last_n = int(m_last.group(1))
+            start = max(0, total - last_n)
+            status = 206
+          elif m_range:
+            start = int(m_range.group(1))
+            if m_range.group(2):
+              end = min(total - 1, int(m_range.group(2)))
+            status = 206
+        data = parent.payload[start : end + 1]
+        self.send_response(status)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try:
+          self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+          with parent._lock:
+            parent.aborted_streams += 1
+
+      def log_message(self, fmt, *args):
+        del fmt, args
+
+    self._httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    self.port = self._httpd.server_address[1]
+    self._thread = threading.Thread(
+        target=self._httpd.serve_forever, daemon=True
+    )
+    self._thread.start()
+
+  def close(self):
+    self._httpd.shutdown()
+    self._httpd.server_close()
+    self._thread.join(timeout=5.0)
 
 
 class ArrayRecordModuleTest(absltest.TestCase):
@@ -141,6 +219,128 @@ class ArrayRecordModuleTest(absltest.TestCase):
         reader.writer_options_string(),
         "group_size:42,transpose:false,pad_to_block_boundary:false,zstd:3,"
         "window_log:20,max_parallelism:1")
+
+  def test_gcs_read_single_open_rpc(self):
+    # Write a >2 MiB uncompressed ArrayRecord file so that the file size exceeds
+    # the 1 MiB tail prefetch window.
+    writer = ArrayRecordWriter(self.test_file, "group_size:1,uncompressed")
+    records = [f"record-{i:04d}-".encode() + (b"x" * 65536) for i in range(36)]
+    for r in records:
+      writer.write(r)
+    writer.close()
+    with open(self.test_file, "rb") as f:
+      payload = f.read()
+    self.assertGreater(len(payload), 2 * 1024 * 1024)
+
+    mock_gcs = _MockGcsServer(payload)
+    old_endpoint = os.environ.get("CLOUD_STORAGE_EMULATOR_ENDPOINT")
+    os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = (
+        f"http://127.0.0.1:{mock_gcs.port}"
+    )
+    try:
+      # Opening and closing a gs:// shard should issue exactly 1 HTTP GET
+      # (with Range: bytes=-1048576) instead of 3 HTTP GETs.
+      num_records = len(records)
+      reader = ArrayRecordReader(
+          "gs://test-bucket/shard-00000-of-00001",
+          "readahead_buffer_size:0,max_parallelism:0",
+          file_reader_buffer_size=32768,
+      )
+      self.assertEqual(reader.num_records(), num_records)
+      reader.close()
+      self.assertLen(
+          mock_gcs.requests,
+          1,
+          msg=(
+              f"ranges={[r['range'] for r in mock_gcs.requests]}, "
+              f"tcp_connections={mock_gcs.tcp_connections}, "
+              f"aborted_streams={mock_gcs.aborted_streams}"
+          ),
+      )
+      self.assertEqual(mock_gcs.requests[0]["range"], "bytes=-1048576")
+      self.assertEqual(mock_gcs.tcp_connections, 1)
+      self.assertEqual(mock_gcs.aborted_streams, 0)
+
+      # Opening a gs:// shard with index_storage_option:offloaded should also
+      # issue only 1 HTTP GET by serving OffloadedChunkOffset lookups from the
+      # prefetched tail buffer.
+      mock_gcs.requests.clear()
+      conns_before = mock_gcs.tcp_connections
+      reader = ArrayRecordReader(
+          "gs://test-bucket/shard-00000-of-00001",
+          "index_storage_option:offloaded,readahead_buffer_size:0,max_parallelism:0",
+          file_reader_buffer_size=32768,
+      )
+      self.assertEqual(reader.num_records(), num_records)
+      reader.close()
+      self.assertLen(mock_gcs.requests, 1)
+      self.assertEqual(mock_gcs.requests[0]["range"], "bytes=-1048576")
+      self.assertEqual(mock_gcs.tcp_connections - conns_before, 1)
+      self.assertEqual(mock_gcs.aborted_streams, 0)
+
+      # Verify record payload reading works over gs:// and reuses the same
+      # TCP connection within the ArrayRecordReader instance.
+      mock_gcs.requests.clear()
+      conns_before = mock_gcs.tcp_connections
+      reader = ArrayRecordReader(
+          "gs://test-bucket/shard-00000-of-00001",
+          "readahead_buffer_size:16M,max_parallelism:1",
+          file_reader_buffer_size=32768,
+      )
+      self.assertEqual(
+          reader.read([0, 17, 35]), [records[0], records[17], records[35]]
+      )
+      reader.close()
+      self.assertEqual(mock_gcs.tcp_connections - conns_before, 1)
+    finally:
+      if old_endpoint is None:
+        os.environ.pop("CLOUD_STORAGE_EMULATOR_ENDPOINT", None)
+      else:
+        os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = old_endpoint
+      mock_gcs.close()
+
+  def test_gcs_concurrent_multithreaded_reads(self):
+    writer = ArrayRecordWriter(self.test_file, "group_size:1,uncompressed")
+    records = [f"record-{i:04d}-".encode() + (b"x" * 65536) for i in range(36)]
+    for r in records:
+      writer.write(r)
+    writer.close()
+    with open(self.test_file, "rb") as f:
+      payload = f.read()
+
+    mock_gcs = _MockGcsServer(payload)
+    old_endpoint = os.environ.get("CLOUD_STORAGE_EMULATOR_ENDPOINT")
+    os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = (
+        f"http://127.0.0.1:{mock_gcs.port}"
+    )
+    try:
+      def worker(idx: int):
+        options = (
+            "index_storage_option:offloaded,readahead_buffer_size:16M,max_parallelism:1"
+            if idx % 2 == 1
+            else "readahead_buffer_size:16M,max_parallelism:1"
+        )
+        reader = ArrayRecordReader(f"gs://test-bucket/shard-{idx:05d}", options)
+        self.assertLen(records, reader.num_records())
+        fetched = reader.read([0, idx % len(records), len(records) - 1])
+        reader.close()
+        return fetched
+
+      with futures.ThreadPoolExecutor(max_workers=16) as executor:
+        results = list(executor.map(worker, range(32)))
+
+      for idx, fetched in enumerate(results):
+        self.assertEqual(
+            fetched,
+            [records[0], records[idx % len(records)], records[-1]],
+        )
+      self.assertLen(mock_gcs.requests, 64)
+    finally:
+      if old_endpoint is None:
+        os.environ.pop("CLOUD_STORAGE_EMULATOR_ENDPOINT", None)
+      else:
+        os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = old_endpoint
+      mock_gcs.close()
 
 
 if __name__ == "__main__":

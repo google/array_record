@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <random>
 #include <string>
@@ -35,7 +36,9 @@ limitations under the License.
 #include "cpp/test_utils.h"
 #include "cpp/thread_pool.h"
 #include "riegeli/base/maker.h"
+#include "riegeli/base/types.h"
 #include "riegeli/bytes/chain_writer.h"
+#include "riegeli/bytes/reader.h"
 #include "riegeli/bytes/string_reader.h"
 #include "riegeli/bytes/string_writer.h"
 #include "riegeli/chunk_encoding/chunk.h"
@@ -448,6 +451,213 @@ TEST(ArrayRecordReaderTest, OutOfBoundsChunkIdx) {
 
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
+}
+
+// Simulates a Reader (such as riegeli::GcsReader opened with ReadLast) that
+// starts at `max(0, size - tail_prefetch_size)` with an initially empty buffer
+// that is populated on Pull().
+class TailPrefetchTestReader : public riegeli::Reader {
+ public:
+  TailPrefetchTestReader(absl::string_view data, size_t tail_prefetch_size,
+                         int* pull_count, int* new_reader_count)
+      : data_(data),
+        initial_pos_(data.size() > tail_prefetch_size
+                         ? data.size() - tail_prefetch_size
+                         : 0),
+        pull_count_(pull_count),
+        new_reader_count_(new_reader_count) {
+    set_limit_pos(initial_pos_);
+  }
+
+  bool SupportsRandomAccess() override { return true; }
+  bool SupportsNewReader() override { return true; }
+
+ protected:
+  void Done() override {
+    // Ensure available() == 0 on Close() so BufferedReader::Done() does not
+    // issue a spurious SeekBehindBuffer() RPC.
+    EXPECT_EQ(available(), 0);
+    riegeli::Reader::Done();
+  }
+
+  bool PullSlow(size_t min_length, size_t recommended_length) override {
+    if (pull_count_ != nullptr) {
+      ++(*pull_count_);
+    }
+    if (min_length > data_.size() - initial_pos_) {
+      return false;
+    }
+    set_buffer(data_.data() + initial_pos_, min_length);
+    set_limit_pos(initial_pos_ + min_length);
+    return true;
+  }
+
+  std::optional<riegeli::Position> SizeImpl() override { return data_.size(); }
+
+  std::unique_ptr<riegeli::Reader> NewReaderImpl(
+      riegeli::Position initial_pos) override {
+    if (new_reader_count_ != nullptr) {
+      ++(*new_reader_count_);
+    }
+    constexpr size_t kBlockSize = 1 << 16;
+    const size_t end_pos = initial_pos < data_.size() - kBlockSize
+                               ? data_.size() - kBlockSize
+                               : data_.size();
+    auto reader =
+        std::make_unique<ExactSliceReader>(data_.substr(0, end_pos));
+    reader->Seek(initial_pos);
+    return reader;
+  }
+
+ private:
+  class ExactSliceReader : public riegeli::StringReader<> {
+   public:
+    explicit ExactSliceReader(absl::string_view data)
+        : riegeli::StringReader<>(data) {}
+
+    ~ExactSliceReader() override { EXPECT_EQ(pos(), limit_pos()); }
+  };
+
+  absl::string_view data_;
+  size_t initial_pos_;
+  int* pull_count_;
+  int* new_reader_count_;
+};
+
+TEST(ArrayRecordReaderTest, TailPrefetchReadsPostscriptAndFooterFromBuffer) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(2).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> test_str{std::string(1 << 20, 'a'), "bbb", "ccc",
+                                    "ddd", "eee"};
+  for (const auto& s : test_str) {
+    EXPECT_TRUE(writer.WriteRecord(s));
+  }
+  ASSERT_TRUE(writer.Close());
+  ASSERT_GT(encoded.size(), 1 << 20);
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  constexpr size_t kTailPrefetch = 1 << 20;  // 1 MiB (exact boundary)
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(encoded, kTailPrefetch,
+                                             &pull_count, &new_reader_count),
+      ArrayRecordReaderBase::Options(), nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  // Both postscript and footer should be read directly from the pulled tail
+  // buffer without any NewReader() calls during Initialize().
+  EXPECT_EQ(pull_count, 1);
+  EXPECT_EQ(new_reader_count, 0);
+  EXPECT_EQ(reader.NumRecords(), test_str.size());
+  ASSERT_TRUE(reader.Close());
+}
+
+TEST(ArrayRecordReaderTest,
+     TailPrefetchDoesNotPullWhenRemainingExceedsMaxTailPrefetch) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(2).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> test_str{std::string(1 << 20, 'a'), "bbb"};
+  for (const auto& s : test_str) {
+    EXPECT_TRUE(writer.WriteRecord(s));
+  }
+  ASSERT_TRUE(writer.Close());
+  ASSERT_GT(encoded.size(), 1 << 20);
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  // Start at offset 0 on an input larger than kTailPrefetchSize (1 MiB).
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(encoded, encoded.size(),
+                                             &pull_count, &new_reader_count),
+      ArrayRecordReaderBase::Options(), nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  // Remaining bytes exceed 1 MiB, so Initialize() must not Pull() the entire
+  // file and instead reads postscript and footer via NewReader().
+  EXPECT_EQ(pull_count, 0);
+  EXPECT_EQ(new_reader_count, 2);
+  EXPECT_EQ(reader.NumRecords(), test_str.size());
+  ASSERT_TRUE(reader.Close());
+}
+
+TEST(ArrayRecordReaderTest,
+     TailPrefetchFallsBackToNewReaderWhenFooterBeforeStartPos) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(2).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> test_str{"aaa", "bbb", "ccc", "ddd", "eee"};
+  for (const auto& s : test_str) {
+    EXPECT_TRUE(writer.WriteRecord(s));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  // Only prefetch the 64 KiB postscript block so footer_offset < start_pos().
+  constexpr size_t kPostscriptOnlyPrefetch = 1 << 16;  // 64 KiB
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(encoded, kPostscriptOnlyPrefetch,
+                                             &pull_count, &new_reader_count),
+      ArrayRecordReaderBase::Options(), nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  // Postscript is read from the buffered tail (0 NewReader calls), while footer
+  // falls back to NewReader() (1 NewReader call).
+  EXPECT_EQ(pull_count, 1);
+  EXPECT_EQ(new_reader_count, 1);
+  EXPECT_EQ(reader.NumRecords(), test_str.size());
+  ASSERT_TRUE(reader.Close());
+}
+
+TEST(ArrayRecordReaderTest, TailPrefetchReadsOffloadedIndexFromBuffer) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(2).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> test_str{"aaa", "bbb", "ccc", "ddd", "eee"};
+  for (const auto& s : test_str) {
+    EXPECT_TRUE(writer.WriteRecord(s));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  constexpr size_t kTailPrefetch = 1 << 20;  // 1 MiB
+  auto reader_options =
+      ArrayRecordReaderBase::Options()
+          .set_index_storage_option(IndexStorageOption::kOffloaded)
+          .set_max_parallelism(0);
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(encoded, kTailPrefetch,
+                                             &pull_count, &new_reader_count),
+      reader_options, nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  // Postscript, footer, and OffloadedChunkOffset lookups during Initialize()
+  // should all be served from the pulled tail buffer without NewReader() calls.
+  EXPECT_EQ(pull_count, 1);
+  EXPECT_EQ(new_reader_count, 0);
+  EXPECT_EQ(reader.NumRecords(), test_str.size());
+  ASSERT_TRUE(reader.Close());
+}
+
+TEST(ArrayRecordReaderTest, TailPrefetchFailsOnCorruptedChunkInBuffer) {
+  std::string corrupted(1 << 16, 'x');
+  int pull_count = 0;
+  int new_reader_count = 0;
+  constexpr size_t kTailPrefetch = 1 << 20;
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(corrupted, kTailPrefetch,
+                                             &pull_count, &new_reader_count),
+      ArrayRecordReaderBase::Options(), nullptr);
+  EXPECT_FALSE(reader.status().ok());
+  EXPECT_EQ(pull_count, 1);
+  EXPECT_EQ(new_reader_count, 0);
 }
 
 }  // namespace
