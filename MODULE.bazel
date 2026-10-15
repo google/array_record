@@ -16,7 +16,7 @@
 # and .github/workflows/publish_release.yml).
 module(
     name = "array_record",
-    version = "0.8.4",
+    version = "0.8.5",
     repo_name = "com_google_array_record",
 )
 
