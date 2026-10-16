@@ -266,7 +266,7 @@ ChunkDecoder ReadChunk(Reader& reader, size_t pos, size_t len) {
     decoder.Fail(reader.status());
     return decoder;
   }
-  MaskedReader masked_reader(reader.NewReader(pos), len);
+  MaskedReader masked_reader(reader.NewReader(pos, len), len);
   if (!masked_reader.ok()) {
     decoder.Fail(masked_reader.status());
     return decoder;
@@ -469,7 +469,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start]),
+              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start],
+                                buf_len),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
@@ -548,7 +549,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start]),
+              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start],
+                                buf_len),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
@@ -670,7 +672,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[buffer_chunks[0]]),
+              reader->NewReader((*state_->chunk_offsets)[buffer_chunks[0]],
+                                buf_len),
               buf_len);
         }
         for (auto chunk_idx : buffer_chunks) {
@@ -851,7 +854,8 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
       {
         AR_ENDO_SCOPE("MaskedReader");
         masked_reader =
-            MaskedReader(reader->NewReader(chunk_offsets.front()), buffer_len);
+            MaskedReader(reader->NewReader(chunk_offsets.front(), buffer_len),
+                         buffer_len);
       }
       if (!masked_reader.ok()) {
         for (auto& decoder : decoders) {
