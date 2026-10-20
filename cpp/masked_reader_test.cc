@@ -15,9 +15,13 @@ limitations under the License.
 
 #include "cpp/masked_reader.h"
 
+#include <memory>
 #include <string>
 
 #include "gtest/gtest.h"
+#include "cpp/tri_state_ptr.h"
+#include "riegeli/base/maker.h"
+#include "riegeli/bytes/reader.h"
 #include "riegeli/bytes/string_reader.h"
 
 namespace array_record {
@@ -71,6 +75,25 @@ TEST(MaskedReaderTest, SanityTest) {
 
   // Seek beyond buffer is a failure.
   EXPECT_FALSE(masked_reader1.Seek(20));
+}
+
+TEST(MaskedReaderTest, SharedRefAndNullptrTest) {
+  std::string data = "0123456789abcdef";
+  TriStatePtr<riegeli::Reader> main_reader(
+      riegeli::Maker<StringReader>(data));
+  auto shared_reader = main_reader.MakeShared();
+  ASSERT_TRUE(shared_reader->Seek(4));
+
+  MaskedReader masked_reader(shared_reader, 6);
+  ASSERT_TRUE(masked_reader.ok());
+  EXPECT_EQ(masked_reader.pos(), 4);
+  EXPECT_EQ(masked_reader.Size(), 10);
+  std::string result;
+  EXPECT_TRUE(masked_reader.Read(6, result));
+  EXPECT_EQ(result, "456789");
+
+  MaskedReader null_reader(std::unique_ptr<riegeli::Reader>(nullptr), 6);
+  EXPECT_FALSE(null_reader.ok());
 }
 
 }  // namespace

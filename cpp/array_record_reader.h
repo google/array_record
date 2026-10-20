@@ -78,8 +78,9 @@ class ArrayRecordReaderBase : public riegeli::Object {
     //   options ::= option? ("," option?)*
     //   option ::=
     //     "readahead_buffer_size" ":" readahead_buffer_size |
-    //     "max_parallelism" ":" max_parallelism
-    //     "index_storage_option" ":" index_storage_option
+    //     "max_parallelism" ":" max_parallelism |
+    //     "index_storage_option" ":" index_storage_option |
+    //     "footer_prefetch_bytes" ":" footer_prefetch_bytes
     //   readahead_buffer_size ::= non-negative integer expressed as real with
     //     optional suffix [BKMG]. (Example 16MB). Set to 0 optimizes random
     //     access performance. Defaults 0.
@@ -89,6 +90,9 @@ class ArrayRecordReaderBase : public riegeli::Object {
     //     optimizes random access performance.
     //   index_storage_option ::= `in_memory` or `offloaded`. Default to
     //     `in_memory`.
+    //   footer_prefetch_bytes ::= `auto` or non-negative integer expressed as
+    //     real with optional suffix [BKMG]. Defaults to 1MB. Only supported
+    //     with `index_storage_option:in_memory`.
     // ```
     static absl::StatusOr<Options> FromString(absl::string_view text);
 
@@ -119,10 +123,20 @@ class ArrayRecordReaderBase : public riegeli::Object {
       return index_storage_option_;
     }
 
+    // Prefetches the tail of the file to read the postscript and footer in a
+    // single read. Only supported with `IndexStorageOption::kInMemory`.
+    static constexpr uint64_t kDefaultFooterPrefetchBytes = 1 << 20;
+    Options& set_footer_prefetch_bytes(uint64_t footer_prefetch_bytes) {
+      footer_prefetch_bytes_ = footer_prefetch_bytes;
+      return *this;
+    }
+    uint64_t footer_prefetch_bytes() const { return footer_prefetch_bytes_; }
+
    private:
     std::optional<uint32_t> max_parallelism_ = std::nullopt;
     uint64_t readahead_buffer_size_ = kDefaultReadaheadBufferSize;
     IndexStorageOption index_storage_option_ = IndexStorageOption::kInMemory;
+    uint64_t footer_prefetch_bytes_ = kDefaultFooterPrefetchBytes;
   };
 
   // Reads the entire file in parallel and invokes the callback function of

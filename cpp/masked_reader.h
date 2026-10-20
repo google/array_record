@@ -16,10 +16,12 @@ limitations under the License.
 #ifndef ARRAY_RECORD_CPP_MASKED_READER_H_
 #define ARRAY_RECORD_CPP_MASKED_READER_H_
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
 #include "absl/types/optional.h"
+#include "cpp/tri_state_ptr.h"
 #include "riegeli/base/object.h"
 #include "riegeli/base/types.h"
 #include "riegeli/bytes/reader.h"
@@ -47,6 +49,15 @@ class MaskedReader : public riegeli::Reader {
  public:
   explicit MaskedReader(riegeli::Closed) : riegeli::Reader(riegeli::kClosed) {}
 
+  // Constructs a `MaskedReader` from a shared reference to an existing
+  // `riegeli::Reader`.
+  //
+  // WARNING: This constructor mutates the state of `shared_src_reader` and is
+  // NOT thread-safe. It must only be accessed from a single thread (such as
+  // during single-threaded index initialization), and must not be mixed with
+  // concurrent multi-threaded reads.
+  MaskedReader(TriStatePtr<riegeli::Reader>::SharedRef shared_src_reader,
+               size_t length);
   MaskedReader(std::unique_ptr<riegeli::Reader> src_reader, size_t length);
 
   MaskedReader(MaskedReader &&other) noexcept;
@@ -64,6 +75,7 @@ class MaskedReader : public riegeli::Reader {
       riegeli::Position initial_pos) override;
 
  private:
+  MaskedReader(riegeli::Reader* src_reader, size_t length);
   // Private constructor that copies itself.
   MaskedReader(std::shared_ptr<std::string> buffer,
                riegeli::Position limit_pos);

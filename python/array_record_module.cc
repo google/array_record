@@ -100,10 +100,16 @@ PYBIND11_MODULE(array_record_module, m) {
              // Release the GIL because IO is time consuming.
              py::gil_scoped_release scoped_release;
              if (absl::StartsWith(path, "gs://")) {
+               const auto footer_prefetch_bytes =
+                   status_or_option->footer_prefetch_bytes();
                return new array_record::ArrayRecordReader(
                    riegeli::Maker<riegeli::GcsReader>(
                        google::cloud::storage::Client(),
-                       riegeli::GcsObject(path), std::move(gcs_reader_options)),
+                       riegeli::GcsObject(path), std::move(gcs_reader_options),
+                       footer_prefetch_bytes > 0
+                           ? google::cloud::storage::ReadLast(
+                                 footer_prefetch_bytes)
+                           : google::cloud::storage::ReadLast()),
                    status_or_option.value(),
                    array_record::ArrayRecordGlobalPool());
              } else {
@@ -130,7 +136,9 @@ PYBIND11_MODULE(array_record_module, m) {
            options ::= option? ("," option?)*
            option ::=
              "readahead_buffer_size" ":" readahead_buffer_size |
-             "max_parallelism" ":" max_parallelism
+             "max_parallelism" ":" max_parallelism |
+             "index_storage_option" ":" index_storage_option |
+             "footer_prefetch_bytes" ":" footer_prefetch_bytes
            readahead_buffer_size ::= non-negative integer expressed as real with
              optional suffix [BkKMGTPE]. (Default 16MB). Set to 0 optimizes
              random access performance.
@@ -138,6 +146,11 @@ PYBIND11_MODULE(array_record_module, m) {
              thread owns its readhaed buffer with the size
              `readahead_buffer_size`.  (Default thread pool size) Set to 0
              optimizes random access performance.
+           index_storage_option ::= `in_memory` or `offloaded`. Defaults to
+             `in_memory`.
+           footer_prefetch_bytes ::= `auto` or non-negative integer expressed as
+             real with optional suffix [BkKMGTPE]. Defaults to 1MB. Only
+             supported with `index_storage_option:in_memory`.
 
            The default option is optimized for sequential access. To optimize
            the random access performance, set the options to

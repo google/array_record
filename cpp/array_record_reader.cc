@@ -179,8 +179,23 @@ ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
                          {"in_memory", IndexStorageOption::kInMemory},
                          {"offloaded", IndexStorageOption::kOffloaded}},
                         &options.index_storage_option_));
+  // Footer prefetch bytes
+  options_parser.AddOption(
+      "footer_prefetch_bytes",
+      ValueParser::Or(
+          ValueParser::Enum({{"auto", kDefaultFooterPrefetchBytes}},
+                            &options.footer_prefetch_bytes_),
+          ValueParser::Bytes(/*min_value=*/0,
+                             /*max_value=*/1024 * 1024 * 1024,
+                             &options.footer_prefetch_bytes_)));
   if (!options_parser.FromString(text)) {
     return options_parser.status();
+  }
+  if (options.index_storage_option() == IndexStorageOption::kOffloaded &&
+      options.footer_prefetch_bytes() > 0) {
+    return InvalidArgumentError(
+        "footer_prefetch_bytes > 0 is only supported with "
+        "index_storage_option:in_memory.");
   }
   if (max_parallelism >= 0) {
     options.set_max_parallelism(max_parallelism);
@@ -285,6 +300,14 @@ void ArrayRecordReaderBase::Initialize() {
   if (!ok()) {
     return;
   }
+  if (state_->options.index_storage_option() ==
+          Options::IndexStorageOption::kOffloaded &&
+      state_->options.footer_prefetch_bytes() > 0) {
+    Fail(InvalidArgumentError(
+        "footer_prefetch_bytes > 0 is only supported with "
+        "index_storage_option:in_memory."));
+    return;
+  }
   auto reader = get_backing_reader();
   if (!reader->ok()) {
     Fail(reader->status());
@@ -327,9 +350,25 @@ void ArrayRecordReaderBase::Initialize() {
           InvalidArgumentError("ArrayRecord file should be at least 64KB big"));
       return;
     }
+    const uint64_t prefetch_length =
+        std::min<uint64_t>(size, state_->options.footer_prefetch_bytes());
+    const uint64_t prefetch_offset = size - prefetch_length;
+    MaskedReader prefetched_reader(riegeli::kClosed);
+    if (prefetch_length > 0) {
+      if (!reader->Seek(prefetch_offset)) {
+        Fail(Annotate(reader->status(),
+                      "Failed to seek to footer prefetch offset"));
+        return;
+      }
+      prefetched_reader = MaskedReader(reader, prefetch_length);
+    }
+    const uint64_t postscript_offset = size - kRiegeliBlockSize;
     RiegeliPostscript postscript;
     auto postscript_decoder =
-        ReadChunk(*reader, size - kRiegeliBlockSize, kRiegeliBlockSize);
+        ReadChunk((prefetch_length > 0 && postscript_offset >= prefetch_offset)
+                      ? prefetched_reader
+                      : *reader,
+                  postscript_offset, kRiegeliBlockSize);
     if (!postscript_decoder.ReadRecord(postscript)) {
       Fail(Annotate(postscript_decoder.status(),
                     "Failed to read RiegeliPostscript"));
@@ -347,8 +386,11 @@ void ArrayRecordReaderBase::Initialize() {
     }
     auto footer_offset = postscript.footer_offset();
     state_->footer_offset = footer_offset;
-    footer_decoder = ReadChunk(*reader, footer_offset,
-                               size - kRiegeliBlockSize - footer_offset);
+    footer_decoder =
+        ReadChunk((prefetch_length > 0 && footer_offset >= prefetch_offset)
+                      ? prefetched_reader
+                      : *reader,
+                  footer_offset, size - kRiegeliBlockSize - footer_offset);
 
     if (!footer_decoder.ReadRecord(footer_metadata)) {
       Fail(Annotate(footer_decoder.status(),

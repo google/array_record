@@ -144,6 +144,7 @@ cc_library(
     hdrs = ["masked_reader.h"],
     deps = [
         ":common",
+        ":tri_state_ptr",
         "@abseil-cpp//absl/memory",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/time",
@@ -255,7 +256,10 @@ cc_test(
     srcs = ["masked_reader_test.cc"],
     deps = [
         ":masked_reader",
+        ":tri_state_ptr",
         "@googletest//:gtest_main",
+        "@riegeli//riegeli/base:initializer",
+        "@riegeli//riegeli/bytes:reader",
         "@riegeli//riegeli/bytes:string_reader",
     ],
 )
@@ -296,7 +300,9 @@ cc_test(
         "@abseil-cpp//absl/strings",
         "@googletest//:gtest_main",
         "@riegeli//riegeli/base:initializer",
+        "@riegeli//riegeli/base:types",
         "@riegeli//riegeli/bytes:chain_writer",
+        "@riegeli//riegeli/bytes:reader",
         "@riegeli//riegeli/bytes:string_reader",
         "@riegeli//riegeli/bytes:string_writer",
         "@riegeli//riegeli/chunk_encoding:chunk",

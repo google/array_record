@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "cpp/masked_reader.h"
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <utility>
@@ -24,6 +25,7 @@ limitations under the License.
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "cpp/common.h"
+#include "cpp/tri_state_ptr.h"
 #include "riegeli/base/object.h"
 #include "riegeli/base/status.h"
 #include "riegeli/base/types.h"
@@ -34,9 +36,20 @@ using riegeli::Annotate;
 using riegeli::Position;
 using riegeli::Reader;
 
+MaskedReader::MaskedReader(
+    TriStatePtr<riegeli::Reader>::SharedRef shared_src_reader, size_t length)
+    : MaskedReader(&*shared_src_reader, length) {}
+
 MaskedReader::MaskedReader(std::unique_ptr<riegeli::Reader> src_reader,
                            size_t length)
+    : MaskedReader(src_reader.get(), length) {}
+
+MaskedReader::MaskedReader(riegeli::Reader* src_reader, size_t length)
     : buffer_(std::make_shared<std::string>()) {
+  if (src_reader == nullptr) {
+    Fail(InvalidArgumentError("Could not create reader at the given offset"));
+    return;
+  }
   auto pos = src_reader->pos();
   buffer_->resize(length);
   if (!src_reader->Read(length, buffer_->data())) {

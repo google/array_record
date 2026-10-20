@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <random>
 #include <string>
@@ -35,7 +36,9 @@ limitations under the License.
 #include "cpp/test_utils.h"
 #include "cpp/thread_pool.h"
 #include "riegeli/base/maker.h"
+#include "riegeli/base/types.h"
 #include "riegeli/bytes/chain_writer.h"
+#include "riegeli/bytes/reader.h"
 #include "riegeli/bytes/string_reader.h"
 #include "riegeli/bytes/string_writer.h"
 #include "riegeli/chunk_encoding/chunk.h"
@@ -107,6 +110,9 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
 
   auto reader_opt = ArrayRecordReaderBase::Options();
   reader_opt.set_index_storage_option(index_storage_option());
+  if (index_storage_option() == IndexStorageOption::kOffloaded) {
+    reader_opt.set_footer_prefetch_bytes(0);
+  }
   if (optimize_for_random_access()) {
     reader_opt.set_max_parallelism(0);
     reader_opt.set_readahead_buffer_size(0);
@@ -197,6 +203,9 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
 
   auto reader_opt = ArrayRecordReaderBase::Options();
   reader_opt.set_index_storage_option(index_storage_option());
+  if (index_storage_option() == IndexStorageOption::kOffloaded) {
+    reader_opt.set_footer_prefetch_bytes(0);
+  }
   if (optimize_for_random_access()) {
     reader_opt.set_max_parallelism(0);
     reader_opt.set_readahead_buffer_size(0);
@@ -296,6 +305,8 @@ TEST(ArrayRecordReaderOptionTest, ParserTest) {
     EXPECT_EQ(option.max_parallelism(), std::nullopt);
     EXPECT_EQ(option.readahead_buffer_size(),
               ArrayRecordReaderBase::Options::kDefaultReadaheadBufferSize);
+    EXPECT_EQ(option.footer_prefetch_bytes(),
+              ArrayRecordReaderBase::Options::kDefaultFooterPrefetchBytes);
   }
   {
     auto option =
@@ -318,6 +329,39 @@ TEST(ArrayRecordReaderOptionTest, ParserTest) {
                       .value();
     EXPECT_EQ(option.max_parallelism(), 0);
     EXPECT_EQ(option.readahead_buffer_size(), 0);
+  }
+  {
+    auto option =
+        ArrayRecordReaderBase::Options::FromString("footer_prefetch_bytes:512K")
+            .value();
+    EXPECT_EQ(option.footer_prefetch_bytes(), 512 * 1024);
+  }
+  {
+    auto option =
+        ArrayRecordReaderBase::Options::FromString("footer_prefetch_bytes:0")
+            .value();
+    EXPECT_EQ(option.footer_prefetch_bytes(), 0);
+  }
+  {
+    auto option =
+        ArrayRecordReaderBase::Options::FromString("footer_prefetch_bytes:auto")
+            .value();
+    EXPECT_EQ(option.footer_prefetch_bytes(),
+              ArrayRecordReaderBase::Options::kDefaultFooterPrefetchBytes);
+  }
+  {
+    auto status_or_option = ArrayRecordReaderBase::Options::FromString(
+        "index_storage_option:offloaded");
+    EXPECT_FALSE(status_or_option.ok());
+    EXPECT_EQ(status_or_option.status().code(),
+              absl::StatusCode::kInvalidArgument);
+  }
+  {
+    auto option = ArrayRecordReaderBase::Options::FromString(
+                      "index_storage_option:offloaded,footer_prefetch_bytes:0")
+                      .value();
+    EXPECT_EQ(option.index_storage_option(), IndexStorageOption::kOffloaded);
+    EXPECT_EQ(option.footer_prefetch_bytes(), 0);
   }
 }
 
@@ -448,6 +492,299 @@ TEST(ArrayRecordReaderTest, OutOfBoundsChunkIdx) {
 
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
+}
+
+// Simulates a Reader (such as riegeli::GcsReader opened with ReadLast) that
+// starts at `max(0, size - tail_prefetch_size)` with an initially empty buffer
+// that is populated on Pull().
+class TailPrefetchTestReader : public riegeli::Reader {
+ public:
+  TailPrefetchTestReader(absl::string_view data, size_t tail_prefetch_size,
+                         int* pull_count, int* new_reader_count,
+                         int* seek_count = nullptr)
+      : data_(data),
+        initial_pos_(data.size() > tail_prefetch_size
+                         ? data.size() - tail_prefetch_size
+                         : 0),
+        pull_count_(pull_count),
+        new_reader_count_(new_reader_count),
+        seek_count_(seek_count) {
+    set_limit_pos(initial_pos_);
+  }
+
+  bool SupportsRandomAccess() override { return true; }
+  bool SupportsNewReader() override { return true; }
+
+ protected:
+  void Done() override {
+    // Ensure available() == 0 on Close() so BufferedReader::Done() does not
+    // issue a spurious SeekBehindBuffer() RPC.
+    EXPECT_EQ(available(), 0);
+    riegeli::Reader::Done();
+  }
+
+  bool PullSlow(size_t min_length, size_t recommended_length) override {
+    if (pull_count_ != nullptr) {
+      ++(*pull_count_);
+    }
+    const size_t remaining = data_.size() - limit_pos();
+    if (min_length > remaining) {
+      return false;
+    }
+    set_buffer(data_.data() + limit_pos(), remaining);
+    set_limit_pos(data_.size());
+    return true;
+  }
+
+  bool SeekSlow(riegeli::Position new_pos) override {
+    if (seek_count_ != nullptr) {
+      ++(*seek_count_);
+    }
+    if (new_pos > data_.size()) {
+      return false;
+    }
+    set_buffer();
+    set_limit_pos(new_pos);
+    return true;
+  }
+
+  std::optional<riegeli::Position> SizeImpl() override { return data_.size(); }
+
+  std::unique_ptr<riegeli::Reader> NewReaderImpl(
+      riegeli::Position initial_pos) override {
+    if (new_reader_count_ != nullptr) {
+      ++(*new_reader_count_);
+    }
+    auto reader = std::make_unique<riegeli::StringReader<>>(data_);
+    reader->Seek(initial_pos);
+    return reader;
+  }
+
+ private:
+  absl::string_view data_;
+  size_t initial_pos_;
+  int* pull_count_;
+  int* new_reader_count_;
+  int* seek_count_;
+};
+
+TEST(ArrayRecordReaderTest,
+     FooterPrefetchReadsPostscriptAndFooterFromMaskedReader) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(2).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> test_str{std::string(1 << 20, 'a'), "bbb", "ccc",
+                                    "ddd", "eee"};
+  for (const auto& s : test_str) {
+    EXPECT_TRUE(writer.WriteRecord(s));
+  }
+  ASSERT_TRUE(writer.Close());
+  ASSERT_GT(encoded.size(), 1 << 20);
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  int seek_count = 0;
+  constexpr size_t kTailPrefetch = 1 << 20;  // 1 MiB
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(
+          encoded, kTailPrefetch, &pull_count, &new_reader_count, &seek_count),
+      ArrayRecordReaderBase::Options(), nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  // Both postscript and footer should be read directly from the MaskedReader
+  // constructed over the main reader without any SeekSlow() or NewReader()
+  // calls on the backing reader during Initialize().
+  EXPECT_EQ(seek_count, 0);
+  EXPECT_EQ(pull_count, 1);
+  EXPECT_EQ(new_reader_count, 0);
+  EXPECT_EQ(reader.NumRecords(), test_str.size());
+  ASSERT_TRUE(reader.Close());
+}
+
+TEST(ArrayRecordReaderTest,
+     FooterPrefetchSeeksAndReadsWithoutNewReaderWhenStartingAtZero) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(2).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> test_str{std::string(1 << 20, 'a'), "bbb"};
+  for (const auto& s : test_str) {
+    EXPECT_TRUE(writer.WriteRecord(s));
+  }
+  ASSERT_TRUE(writer.Close());
+  ASSERT_GT(encoded.size(), 1 << 20);
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  int seek_count = 0;
+  // Start at offset 0 on an input larger than footer_prefetch_bytes (1 MiB).
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(
+          encoded, encoded.size(), &pull_count, &new_reader_count, &seek_count),
+      ArrayRecordReaderBase::Options(), nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  // Initialize() seeks the main reader to prefetch_offset and reads both
+  // postscript and footer from the MaskedReader without any NewReader() calls.
+  EXPECT_EQ(seek_count, 1);
+  EXPECT_EQ(pull_count, 1);
+  EXPECT_EQ(new_reader_count, 0);
+  EXPECT_EQ(reader.NumRecords(), test_str.size());
+  ASSERT_TRUE(reader.Close());
+}
+
+TEST(ArrayRecordReaderTest,
+     FooterPrefetchFallsBackToNewReaderWhenFooterExceedsPrefetch) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(2).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> test_str{"aaa", "bbb", "ccc", "ddd", "eee"};
+  for (const auto& s : test_str) {
+    EXPECT_TRUE(writer.WriteRecord(s));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  // Only prefetch the 64 KiB postscript block so footer_offset <
+  // prefetch_offset.
+  constexpr size_t kPostscriptOnlyPrefetch = 1 << 16;  // 64 KiB
+  auto reader_options = ArrayRecordReaderBase::Options()
+                            .set_footer_prefetch_bytes(kPostscriptOnlyPrefetch);
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(encoded, kPostscriptOnlyPrefetch,
+                                             &pull_count, &new_reader_count),
+      reader_options, nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  // Postscript is read from prefetched_reader (1 Pull on main reader), while
+  // footer falls back to NewReader(footer_offset) (1 NewReader call).
+  EXPECT_EQ(pull_count, 1);
+  EXPECT_EQ(new_reader_count, 1);
+  EXPECT_EQ(reader.NumRecords(), test_str.size());
+  ASSERT_TRUE(reader.Close());
+}
+
+TEST(ArrayRecordReaderTest, OffloadedIndexWithPositiveFooterPrefetchFails) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(2).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> test_str{"aaa", "bbb", "ccc", "ddd", "eee"};
+  for (const auto& s : test_str) {
+    EXPECT_TRUE(writer.WriteRecord(s));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  auto reader_options = ArrayRecordReaderBase::Options()
+                            .set_index_storage_option(
+                                IndexStorageOption::kOffloaded);
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<riegeli::StringReader>(encoded), reader_options, nullptr);
+  EXPECT_FALSE(reader.status().ok());
+  EXPECT_EQ(reader.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(ArrayRecordReaderTest, FooterPrefetchFailsOnCorruptedChunk) {
+  std::string corrupted(1 << 16, 'x');
+  int pull_count = 0;
+  int new_reader_count = 0;
+  constexpr size_t kTailPrefetch = 1 << 20;
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(corrupted, kTailPrefetch,
+                                             &pull_count, &new_reader_count),
+      ArrayRecordReaderBase::Options(), nullptr);
+  EXPECT_FALSE(reader.status().ok());
+  EXPECT_EQ(pull_count, 1);
+  EXPECT_EQ(new_reader_count, 0);
+}
+
+TEST(ArrayRecordReaderTest, FooterEndsAtExactBlockBoundaryWithoutPadding) {
+  constexpr size_t kBlockSize = 1 << 16;        // 64 KiB
+  constexpr size_t kProbeRecordSize = 1 << 15;  // 32 KiB
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(1).set_uncompressed();
+
+  std::string probe_encoded;
+  {
+    auto writer = ArrayRecordWriter(
+        riegeli::Maker<riegeli::StringWriter>(&probe_encoded), writer_options,
+        nullptr);
+    ASSERT_TRUE(writer.WriteRecord(std::string(kProbeRecordSize, 'a')));
+    ASSERT_TRUE(writer.Close());
+  }
+
+  // Locate the end of the footer chunk (chunk 2: after signature and 1 data
+  // chunk) in the probe file to compute the exact record size that makes the
+  // footer chunk end on the 64 KiB block boundary without trailing padding.
+  riegeli::StringReader<> probe_string_reader(probe_encoded);
+  riegeli::DefaultChunkReader<> probe_chunk_reader(&probe_string_reader);
+  riegeli::Chunk chunk;
+  ASSERT_TRUE(probe_chunk_reader.ReadChunk(chunk));  // Signature chunk
+  ASSERT_TRUE(probe_chunk_reader.ReadChunk(chunk));  // Data chunk
+  ASSERT_TRUE(probe_chunk_reader.ReadChunk(chunk));  // Footer chunk
+  const size_t probe_footer_end = probe_chunk_reader.pos();
+  ASSERT_LT(probe_footer_end, kBlockSize);
+
+  const size_t target_record_size =
+      kProbeRecordSize + (kBlockSize - probe_footer_end);
+  const std::string expected_record(target_record_size, 'b');
+
+  std::string encoded;
+  {
+    auto writer = ArrayRecordWriter(
+        riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options,
+        nullptr);
+    ASSERT_TRUE(writer.WriteRecord(expected_record));
+    ASSERT_TRUE(writer.Close());
+  }
+  ASSERT_EQ(encoded.size(), 2 * kBlockSize);
+
+  // Verify the footer chunk ends directly at the postscript boundary
+  // (encoded.size() - kBlockSize) with zero padding chunks in between.
+  riegeli::StringReader<> verify_string_reader(encoded);
+  riegeli::DefaultChunkReader<> verify_chunk_reader(&verify_string_reader);
+  ASSERT_TRUE(verify_chunk_reader.ReadChunk(chunk));  // Signature chunk
+  ASSERT_TRUE(verify_chunk_reader.ReadChunk(chunk));  // Data chunk
+  ASSERT_TRUE(verify_chunk_reader.ReadChunk(chunk));  // Footer chunk
+  ASSERT_EQ(verify_chunk_reader.pos(), encoded.size() - kBlockSize);
+
+  // 1. Read with footer prefetch enabled (prefetched_reader branch).
+  {
+    int pull_count = 0;
+    int new_reader_count = 0;
+    constexpr size_t kTailPrefetch = 1 << 20;
+    auto reader = ArrayRecordReader(
+        riegeli::Maker<TailPrefetchTestReader>(encoded, kTailPrefetch,
+                                               &pull_count, &new_reader_count),
+        ArrayRecordReaderBase::Options(), nullptr);
+    ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+    EXPECT_EQ(pull_count, 1);
+    EXPECT_EQ(new_reader_count, 0);
+    EXPECT_EQ(reader.NumRecords(), 1);
+    absl::string_view record_view;
+    ASSERT_TRUE(reader.ReadRecord(&record_view));
+    EXPECT_EQ(record_view, expected_record);
+    ASSERT_TRUE(reader.Close());
+  }
+
+  // 2. Read with footer prefetch disabled (*reader branch).
+  {
+    auto reader_options =
+        ArrayRecordReaderBase::Options().set_footer_prefetch_bytes(0);
+    auto reader = ArrayRecordReader(
+        riegeli::Maker<riegeli::StringReader>(encoded), reader_options,
+        nullptr);
+    ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+    EXPECT_EQ(reader.NumRecords(), 1);
+    absl::string_view record_view;
+    ASSERT_TRUE(reader.ReadRecord(&record_view));
+    EXPECT_EQ(record_view, expected_record);
+    ASSERT_TRUE(reader.Close());
+  }
 }
 
 }  // namespace
