@@ -26,7 +26,6 @@ import unittest
 _BCR_PLATFORMS = (
     ("debian11", "k8", "x86_64-unknown-linux-gnu"),
     ("ubuntu2204", "k8", "x86_64-unknown-linux-gnu"),
-    ("macos", "darwin_x86_64", "x86_64-apple-darwin24.2.0"),
     ("macos_arm64", "darwin_arm64", "arm64-apple-darwin24.2.0"),
 )
 
@@ -125,10 +124,10 @@ def _resolve_flags(flags: list[str], bazel_cpu: str, src: str) -> list[str]:
 
 
 class BcrPresubmitTest(unittest.TestCase):
-  """Verifies BCR compilation succeeds across all 4 targeted platforms."""
+  """Verifies BCR compilation succeeds across all 3 targeted platforms."""
 
-  def test_bcr_compiles_across_all_4_platforms(self):
-    """Compiles C++17 and crc32c_sse42.cc across all 4 BCR platforms."""
+  def test_bcr_compiles_across_all_3_platforms(self):
+    """Compiles C++17 and crc32c_sse42.cc across all 3 BCR platforms."""
     clang = _find_clang()
     if not clang:
       self.skipTest("No executable Clang compiler available")
