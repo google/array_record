@@ -787,5 +787,88 @@ TEST(ArrayRecordReaderTest, FooterEndsAtExactBlockBoundaryWithoutPadding) {
   }
 }
 
+TEST(ArrayRecordReaderTest,
+     ParallelReadRecordsWithIndicesCoalescesAndCachesWindows) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(1).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  constexpr int kNumRecords = 32;
+  std::vector<std::string> expected_records;
+  expected_records.reserve(kNumRecords);
+  for (int i = 0; i < kNumRecords; ++i) {
+    expected_records.push_back(std::string(16 * 1024, 'a' + (i % 26)));
+    ASSERT_TRUE(writer.WriteRecord(expected_records.back()));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  // 1. With default 1 MiB footer_prefetch_bytes on a ~576 KiB shard,
+  // Initialize() seeds all 32 chunks into ChunkWindowCache so subsequent
+  // single-record ParallelReadRecordsWithIndices calls issue 0 NewReader calls.
+  {
+    int pull_count = 0;
+    int new_reader_count = 0;
+    constexpr size_t kTailPrefetch = 1 << 20;
+    auto reader = ArrayRecordReader(
+        riegeli::Maker<TailPrefetchTestReader>(encoded, kTailPrefetch,
+                                               &pull_count, &new_reader_count),
+        ArrayRecordReaderBase::Options(), nullptr);
+    ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+    EXPECT_EQ(pull_count, 1);
+    EXPECT_EQ(new_reader_count, 0);
+
+    for (uint64_t idx = 0; idx < kNumRecords; ++idx) {
+      std::vector<uint64_t> indices = {idx};
+      ASSERT_TRUE(reader
+                      .ParallelReadRecordsWithIndices(
+                          indices,
+                          [&](uint64_t indices_idx,
+                              absl::string_view record) -> absl::Status {
+                            EXPECT_EQ(indices_idx, 0);
+                            EXPECT_EQ(record, expected_records[idx]);
+                            return absl::OkStatus();
+                          })
+                      .ok());
+    }
+    EXPECT_EQ(new_reader_count, 0);
+    ASSERT_TRUE(reader.Close());
+  }
+
+  // 2. With footer_prefetch_bytes=0, reading all 32 records one at a time via
+  // ParallelReadRecordsWithIndices fetches the compact shard in 1 NewReader
+  // call (after the 2 NewReader calls for postscript + footer) and serves the
+  // remaining 31 calls from ChunkWindowCache.
+  {
+    int pull_count = 0;
+    int new_reader_count = 0;
+    auto reader_options =
+        ArrayRecordReaderBase::Options().set_footer_prefetch_bytes(0);
+    auto reader = ArrayRecordReader(
+        riegeli::Maker<TailPrefetchTestReader>(encoded, 0, &pull_count,
+                                               &new_reader_count),
+        reader_options, nullptr);
+    ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+    const int init_new_readers = new_reader_count;
+    EXPECT_EQ(init_new_readers, 2);
+
+    for (uint64_t idx = 0; idx < kNumRecords; ++idx) {
+      std::vector<uint64_t> indices = {idx};
+      ASSERT_TRUE(reader
+                      .ParallelReadRecordsWithIndices(
+                          indices,
+                          [&](uint64_t indices_idx,
+                              absl::string_view record) -> absl::Status {
+                            EXPECT_EQ(indices_idx, 0);
+                            EXPECT_EQ(record, expected_records[idx]);
+                            return absl::OkStatus();
+                          })
+                      .ok());
+    }
+    EXPECT_EQ(new_reader_count - init_new_readers, 1);
+    ASSERT_TRUE(reader.Close());
+  }
+}
+
 }  // namespace
 }  // namespace array_record
