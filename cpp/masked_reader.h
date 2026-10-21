@@ -66,6 +66,8 @@ class MaskedReader : public riegeli::Reader {
   bool SupportsRandomAccess() override { return true; }
   bool SupportsNewReader() override { return true; }
 
+  std::shared_ptr<const std::string> shared_buffer() const { return buffer_; }
+
  protected:
   bool PullSlow(size_t min_length, size_t recommended_length) override;
   bool SeekSlow(riegeli::Position new_pos) override;

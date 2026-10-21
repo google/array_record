@@ -28,12 +28,16 @@ limitations under the License.
 #include <vector>
 
 #include "absl/base/optimization.h"
+#include "absl/base/thread_annotations.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/synchronization/notification.h"
+#include "absl/types/optional.h"
 #include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
@@ -44,6 +48,7 @@ limitations under the License.
 #include "riegeli/base/object.h"
 #include "riegeli/base/options_parser.h"
 #include "riegeli/base/status.h"
+#include "riegeli/base/types.h"
 #include "riegeli/bytes/reader.h"
 #include "riegeli/chunk_encoding/chunk.h"
 #include "riegeli/chunk_encoding/chunk_decoder.h"
@@ -206,6 +211,412 @@ ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
 template <typename T>
 using IndexedPair = std::pair<uint64_t, T>;
 
+// Zero-copy `riegeli::Reader` view over a sub-range `[slice_start_offset,
+// slice_end_offset)` of an in-memory cached byte window starting at
+// `window_start_offset`.
+class InMemoryWindowSliceReader : public riegeli::Reader {
+ public:
+  explicit InMemoryWindowSliceReader(riegeli::Closed)
+      : riegeli::Reader(riegeli::kClosed) {}
+
+  InMemoryWindowSliceReader(std::shared_ptr<const std::string> window_data,
+                            uint64_t window_start_offset,
+                            uint64_t slice_start_offset,
+                            uint64_t slice_end_offset)
+      : window_data_(std::move(window_data)),
+        window_start_offset_(window_start_offset) {
+    if (window_data_ == nullptr || slice_start_offset < window_start_offset_ ||
+        slice_end_offset < slice_start_offset ||
+        (slice_end_offset - window_start_offset_) > window_data_->size()) {
+      Fail(InvalidArgumentError("Invalid window slice range"));
+      return;
+    }
+    const char* slice_ptr =
+        window_data_->data() + (slice_start_offset - window_start_offset_);
+    const size_t slice_len = slice_end_offset - slice_start_offset;
+    set_buffer(slice_ptr, slice_len);
+    set_limit_pos(slice_end_offset);
+  }
+
+  InMemoryWindowSliceReader(InMemoryWindowSliceReader&& other) noexcept
+      : riegeli::Reader(std::move(other)),
+        window_data_(std::move(other.window_data_)),
+        window_start_offset_(other.window_start_offset_) {
+    other.Reset(riegeli::kClosed);  // NOLINT(bugprone-use-after-move)
+  }
+
+  InMemoryWindowSliceReader& operator=(
+      InMemoryWindowSliceReader&& other) noexcept {
+    riegeli::Reader::operator=(static_cast<riegeli::Reader&&>(other));
+    window_data_ = std::move(other.window_data_);
+    window_start_offset_ = other.window_start_offset_;
+    other.Reset(riegeli::kClosed);  // NOLINT(bugprone-use-after-move)
+    return *this;
+  }
+
+  bool SupportsRandomAccess() override { return true; }
+  bool SupportsNewReader() override { return true; }
+
+ protected:
+  bool PullSlow(size_t min_length, size_t recommended_length) override {
+    Fail(FailedPreconditionError("Should not pull beyond buffer"));
+    return false;
+  }
+
+  bool SeekSlow(riegeli::Position new_pos) override {
+    Fail(FailedPreconditionError("Should not seek beyond buffer"));
+    return false;
+  }
+
+  absl::optional<riegeli::Position> SizeImpl() override { return limit_pos(); }
+
+  std::unique_ptr<riegeli::Reader> NewReaderImpl(
+      riegeli::Position initial_pos) override {
+    if (!ok()) {
+      return nullptr;
+    }
+    auto reader = std::make_unique<InMemoryWindowSliceReader>(
+        window_data_, window_start_offset_, start_pos(), limit_pos());
+    if (!reader->Seek(initial_pos)) {
+      return nullptr;
+    }
+    return reader;
+  }
+
+ private:
+  std::shared_ptr<const std::string> window_data_;
+  uint64_t window_start_offset_ = 0;
+};
+
+// Thread-safe bounded multi-chunk byte-window LRU cache with in-flight request
+// deduplication and adaptive shard/chunk window sizing.
+class ChunkWindowCache {
+ public:
+  static constexpr size_t kDefaultMaxWindows = 8;
+
+  explicit ChunkWindowCache(size_t max_windows = kDefaultMaxWindows)
+      : max_windows_(max_windows) {}
+
+  // Seeds a chunk-aligned window `[start_offset, end_offset)` backed by a
+  // buffer starting at `buffer_base_offset` (e.g., from the initial tail
+  // footer prefetch) without incrementing `miss_count_`.
+  void SeedWindow(uint64_t start_offset, uint64_t end_offset,
+                  uint64_t buffer_base_offset,
+                  std::shared_ptr<const std::string> data) {
+    if (data == nullptr || start_offset >= end_offset ||
+        start_offset < buffer_base_offset ||
+        (end_offset - buffer_base_offset) > data->size()) {
+      return;
+    }
+    absl::MutexLock lock(&mu_);
+    InsertWindowLocked(start_offset, end_offset, buffer_base_offset,
+                       std::move(data));
+  }
+
+  absl::StatusOr<InMemoryWindowSliceReader> GetOrFetchSlice(
+      riegeli::Reader* backing_reader, uint64_t chunk_idx_start,
+      uint64_t chunk_idx_end, uint64_t range_start, uint64_t range_end,
+      uint64_t num_chunks, uint64_t footer_offset,
+      absl::FunctionRef<uint64_t(uint64_t)> chunk_start_fn,
+      absl::FunctionRef<uint64_t(uint64_t)> chunk_end_fn) {
+    if (backing_reader == nullptr) {
+      return InvalidArgumentError(
+          "Could not create reader at the given offset");
+    }
+    if (!backing_reader->ok()) {
+      return backing_reader->status();
+    }
+
+    std::shared_ptr<InFlightWindow> wait_inflight;
+    std::shared_ptr<InFlightWindow> own_inflight;
+    uint64_t win_start_offset = range_start;
+    uint64_t win_end_offset = range_end;
+    bool should_cache = true;
+
+    {
+      absl::MutexLock lock(&mu_);
+      if (last_chunk_idx_ >= 0 &&
+          chunk_idx_start == static_cast<uint64_t>(last_chunk_idx_) + 1) {
+        ++sequential_run_len_;
+      } else if (last_chunk_idx_ < 0 ||
+                 chunk_idx_start != static_cast<uint64_t>(last_chunk_idx_)) {
+        sequential_run_len_ = 1;
+      }
+      last_chunk_idx_ = static_cast<int64_t>(chunk_idx_end);
+      const bool is_sequential =
+          (sequential_run_len_ >= 2) || (chunk_idx_end > chunk_idx_start);
+
+      for (size_t i = 0; i < entries_.size(); ++i) {
+        if (entries_[i].start_offset <= range_start &&
+            range_end <= entries_[i].end_offset) {
+          WindowEntry hit = std::move(entries_[i]);
+          if (i + 1 < entries_.size()) {
+            entries_.erase(entries_.begin() + i);
+            entries_.push_back(std::move(hit));
+          } else {
+            entries_[i] = std::move(hit);
+          }
+          const auto& mru = entries_.back();
+          return InMemoryWindowSliceReader(mru.data, mru.buffer_base_offset,
+                                           range_start, range_end);
+        }
+      }
+
+      for (const auto& inflight : in_flight_) {
+        if (inflight->start_offset <= range_start &&
+            range_end <= inflight->end_offset) {
+          wait_inflight = inflight;
+          break;
+        }
+      }
+
+      if (wait_inflight == nullptr) {
+        const uint64_t current_miss_idx = miss_count_++;
+        uint64_t win_chunk_start = chunk_idx_start;
+        uint64_t win_chunk_end = chunk_idx_end;
+        ComputeAdaptiveWindowLocked(
+            chunk_idx_start, chunk_idx_end, num_chunks, footer_offset,
+            current_miss_idx, is_sequential, &win_chunk_start, &win_chunk_end,
+            &should_cache);
+
+        win_start_offset = (win_chunk_start == chunk_idx_start)
+                               ? range_start
+                               : chunk_start_fn(win_chunk_start);
+        win_end_offset = (win_chunk_end == chunk_idx_end)
+                             ? range_end
+                             : chunk_end_fn(win_chunk_end);
+
+        if (should_cache &&
+            (win_start_offset < range_start || win_end_offset > range_end)) {
+          TrimWindowAgainstExistingLocked(range_start, range_end,
+                                          &win_start_offset, &win_end_offset);
+        }
+
+        if (should_cache) {
+          own_inflight = std::make_shared<InFlightWindow>();
+          own_inflight->start_offset = win_start_offset;
+          own_inflight->end_offset = win_end_offset;
+          in_flight_.push_back(own_inflight);
+        }
+      }
+    }
+
+    if (wait_inflight != nullptr) {
+      wait_inflight->done.WaitForNotification();
+      if (!wait_inflight->status.ok()) {
+        return wait_inflight->status;
+      }
+      return InMemoryWindowSliceReader(wait_inflight->data,
+                                       wait_inflight->start_offset, range_start,
+                                       range_end);
+    }
+
+    const size_t win_len = win_end_offset - win_start_offset;
+    auto buffer = std::make_shared<std::string>(win_len, '\0');
+    absl::Status read_status = absl::OkStatus();
+    {
+      auto src_reader = backing_reader->NewReader(win_start_offset);
+      if (src_reader == nullptr) {
+        read_status =
+            InvalidArgumentError("Could not create reader at the given offset");
+      } else if (!src_reader->Read(win_len, buffer->data())) {
+        read_status = riegeli::Annotate(
+            src_reader->status(), "Could not read from the underlying reader");
+      }
+    }
+
+    if (should_cache && own_inflight != nullptr) {
+      absl::MutexLock lock(&mu_);
+      auto it = std::find(in_flight_.begin(), in_flight_.end(), own_inflight);
+      if (it != in_flight_.end()) {
+        in_flight_.erase(it);
+      }
+      own_inflight->status = read_status;
+      if (read_status.ok()) {
+        own_inflight->data = buffer;
+        InsertWindowLocked(win_start_offset, win_end_offset, win_start_offset,
+                           buffer);
+      }
+      own_inflight->done.Notify();
+    }
+
+    if (!read_status.ok()) {
+      return read_status;
+    }
+    return InMemoryWindowSliceReader(std::move(buffer), win_start_offset,
+                                     range_start, range_end);
+  }
+
+ private:
+  struct WindowEntry {
+    uint64_t start_offset;
+    uint64_t end_offset;
+    uint64_t buffer_base_offset;
+    std::shared_ptr<const std::string> data;
+  };
+
+  struct InFlightWindow {
+    uint64_t start_offset = 0;
+    uint64_t end_offset = 0;
+    absl::Notification done;
+    std::shared_ptr<const std::string> data;
+    absl::Status status;
+  };
+
+  void ComputeAdaptiveWindowLocked(uint64_t chunk_idx_start,
+                                   uint64_t chunk_idx_end, uint64_t num_chunks,
+                                   uint64_t footer_offset,
+                                   uint64_t current_miss_idx,
+                                   bool is_sequential,
+                                   uint64_t* win_chunk_start,
+                                   uint64_t* win_chunk_end,
+                                   bool* should_cache) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    if (num_chunks == 0) {
+      *win_chunk_start = chunk_idx_start;
+      *win_chunk_end = chunk_idx_end;
+      *should_cache = false;
+      return;
+    }
+
+    if (footer_offset <= (2560ULL << 10)) {
+      // Compact and medium-small shards (<= 2.5 MiB): with the ~1 MiB tail
+      // already seeded during Initialize(), the remaining uncached prefix is at
+      // most ~1.1 MiB. Fetching [0, num_chunks - 1] (trimmed against the
+      // seeded tail) caches 100% of the shard in at most 1 Range GET.
+      *win_chunk_start = 0;
+      *win_chunk_end = num_chunks - 1;
+      *should_cache = true;
+      return;
+    }
+
+    if (footer_offset <= (5120ULL << 10)) {
+      // Medium shards (2.5 MiB .. 5.0 MiB):
+      // 1st miss fetches an aligned quarter-shard (~1 MiB) window; 2nd+ miss
+      // fetches the remaining uncached shard so each shard requires at most 2
+      // Range GETs across the epoch.
+      if (current_miss_idx == 0 && !is_sequential) {
+        const uint64_t group = std::max<uint64_t>(1, num_chunks / 4);
+        *win_chunk_start = (chunk_idx_start / group) * group;
+        *win_chunk_end = std::min<uint64_t>(
+            num_chunks - 1,
+            std::max<uint64_t>(chunk_idx_end, *win_chunk_start + group - 1));
+      } else {
+        *win_chunk_start = 0;
+        *win_chunk_end = num_chunks - 1;
+      }
+      *should_cache = true;
+      return;
+    }
+
+    if (footer_offset <= (16ULL << 20)) {
+      // Medium-large shards (5.0 MiB .. 16.0 MiB):
+      if (is_sequential) {
+        const uint64_t seq_group = std::max<uint64_t>(1, num_chunks / 2);
+        *win_chunk_start = chunk_idx_start;
+        const uint64_t boundary_end =
+            ((chunk_idx_start / seq_group) + 1) * seq_group - 1;
+        *win_chunk_end = std::min<uint64_t>(
+            num_chunks - 1, std::max<uint64_t>(chunk_idx_end, boundary_end));
+      } else if (current_miss_idx == 0) {
+        const uint64_t group = std::max<uint64_t>(1, num_chunks / 8);
+        *win_chunk_start = (chunk_idx_start / group) * group;
+        *win_chunk_end = std::min<uint64_t>(
+            num_chunks - 1,
+            std::max<uint64_t>(chunk_idx_end, *win_chunk_start + group - 1));
+      } else {
+        const uint64_t group = std::max<uint64_t>(1, num_chunks / 2);
+        *win_chunk_start = (chunk_idx_start / group) * group;
+        *win_chunk_end = std::min<uint64_t>(
+            num_chunks - 1,
+            std::max<uint64_t>(chunk_idx_end, *win_chunk_start + group - 1));
+      }
+      *should_cache = true;
+      return;
+    }
+
+    // Large shards (> 16.0 MiB): only prefetch multi-chunk windows when
+    // sequential access is detected; avoid speculative prefetching on sparse
+    // single-record random accesses.
+    if (is_sequential) {
+      const uint64_t avg_chunk_bytes = std::max<uint64_t>(
+          1, footer_offset / std::max<uint64_t>(1, num_chunks));
+      const uint64_t seq_chunks =
+          std::clamp<uint64_t>((4ULL << 20) / avg_chunk_bytes, 2, 16);
+      *win_chunk_start = chunk_idx_start;
+      *win_chunk_end = std::min<uint64_t>(
+          num_chunks - 1,
+          std::max<uint64_t>(chunk_idx_end, chunk_idx_start + seq_chunks - 1));
+      *should_cache = true;
+    } else {
+      *win_chunk_start = chunk_idx_start;
+      *win_chunk_end = chunk_idx_end;
+      *should_cache = false;
+    }
+  }
+
+  void TrimWindowAgainstExistingLocked(uint64_t range_start, uint64_t range_end,
+                                       uint64_t* win_start_offset,
+                                       uint64_t* win_end_offset) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    for (int pass = 0; pass < 2; ++pass) {
+      for (const auto& entry : entries_) {
+        if (entry.start_offset <= *win_start_offset &&
+            entry.end_offset > *win_start_offset &&
+            entry.end_offset <= range_start) {
+          *win_start_offset = entry.end_offset;
+        }
+        if (entry.start_offset >= range_end &&
+            entry.start_offset < *win_end_offset &&
+            entry.end_offset >= *win_end_offset) {
+          *win_end_offset = entry.start_offset;
+        }
+      }
+      for (const auto& inflight : in_flight_) {
+        if (inflight->start_offset <= *win_start_offset &&
+            inflight->end_offset > *win_start_offset &&
+            inflight->end_offset <= range_start) {
+          *win_start_offset = inflight->end_offset;
+        }
+        if (inflight->start_offset >= range_end &&
+            inflight->start_offset < *win_end_offset &&
+            inflight->end_offset >= *win_end_offset) {
+          *win_end_offset = inflight->start_offset;
+        }
+      }
+    }
+  }
+
+  void InsertWindowLocked(uint64_t start_offset, uint64_t end_offset,
+                          uint64_t buffer_base_offset,
+                          std::shared_ptr<const std::string> data)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    for (auto it = entries_.begin(); it != entries_.end();) {
+      if (it->start_offset <= start_offset && end_offset <= it->end_offset) {
+        return;
+      }
+      if (start_offset <= it->start_offset && it->end_offset <= end_offset) {
+        it = entries_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    if (entries_.size() >= max_windows_ && !entries_.empty()) {
+      entries_.erase(entries_.begin());
+    }
+    entries_.push_back(WindowEntry{start_offset, end_offset, buffer_base_offset,
+                                   std::move(data)});
+  }
+
+  size_t max_windows_ = kDefaultMaxWindows;
+  mutable absl::Mutex mu_;
+  std::vector<WindowEntry> entries_ ABSL_GUARDED_BY(mu_);
+  std::vector<std::shared_ptr<InFlightWindow>> in_flight_ ABSL_GUARDED_BY(mu_);
+  uint64_t miss_count_ ABSL_GUARDED_BY(mu_) = 0;
+  int64_t last_chunk_idx_ ABSL_GUARDED_BY(mu_) = -1;
+  uint64_t sequential_run_len_ ABSL_GUARDED_BY(mu_) = 0;
+};
+
 struct ArrayRecordReaderBase::ArrayRecordReaderState {
   ArrayRecordReaderState(const Options options, ARThreadPool* pool)
       : options(options), pool(pool) {}
@@ -226,6 +637,9 @@ struct ArrayRecordReaderBase::ArrayRecordReaderState {
 
   // Writer options for debugging purposes.
   std::optional<std::string> writer_options = std::nullopt;
+
+  // Bounded multi-chunk byte-window cache for random and sequential reads.
+  mutable ChunkWindowCache window_cache;
 
   uint64_t ChunkEndOffset(uint64_t chunk_idx) const {
     if (chunk_idx == chunk_offsets->size() - 1) {
@@ -332,6 +746,9 @@ void ArrayRecordReaderBase::Initialize() {
   AR_ENDO_TASK("Reading ArrayRecord footer");
   RiegeliFooterMetadata footer_metadata;
   ChunkDecoder footer_decoder;
+  uint64_t prefetch_length = 0;
+  uint64_t prefetch_offset = 0;
+  MaskedReader prefetched_reader(riegeli::kClosed);
   {
     AR_ENDO_SCOPE("Reading postscript and footer chunk");
     if (!reader->SupportsRandomAccess()) {
@@ -350,10 +767,9 @@ void ArrayRecordReaderBase::Initialize() {
           InvalidArgumentError("ArrayRecord file should be at least 64KB big"));
       return;
     }
-    const uint64_t prefetch_length =
+    prefetch_length =
         std::min<uint64_t>(size, state_->options.footer_prefetch_bytes());
-    const uint64_t prefetch_offset = size - prefetch_length;
-    MaskedReader prefetched_reader(riegeli::kClosed);
+    prefetch_offset = size - prefetch_length;
     if (prefetch_length > 0) {
       if (!reader->Seek(prefetch_offset)) {
         Fail(Annotate(reader->status(),
@@ -469,6 +885,33 @@ void ArrayRecordReaderBase::Initialize() {
       }
       if (!state_->chunk_group_size) {
         state_->chunk_group_size = state_->chunk_offsets->size();
+      }
+      if (prefetch_length > 0 && state_->footer_offset > prefetch_offset &&
+          state_->options.index_storage_option() ==
+              Options::IndexStorageOption::kInMemory &&
+          prefetched_reader.shared_buffer() != nullptr) {
+        const uint64_t total_chunks = state_->chunk_offsets->size();
+        uint64_t first_seeded_chunk = total_chunks;
+        uint64_t lo = 0;
+        uint64_t hi = total_chunks;
+        while (lo < hi) {
+          const uint64_t mid = lo + (hi - lo) / 2;
+          if ((*state_->chunk_offsets)[mid] >= prefetch_offset) {
+            first_seeded_chunk = mid;
+            hi = mid;
+          } else {
+            lo = mid + 1;
+          }
+        }
+        if (first_seeded_chunk < total_chunks) {
+          const uint64_t seed_start_offset =
+              (*state_->chunk_offsets)[first_seeded_chunk];
+          if (seed_start_offset < state_->footer_offset) {
+            state_->window_cache.SeedWindow(
+                seed_start_offset, state_->footer_offset, prefetch_offset,
+                prefetched_reader.shared_buffer());
+          }
+        }
       }
     }
   }
@@ -688,9 +1131,25 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     }
     // Regular cases.
     if (!per_chunk_indices[i].empty()) {
+      if (state_->options.readahead_buffer_size() == 0 &&
+          state_->options.index_storage_option() ==
+              Options::IndexStorageOption::kOffloaded) {
+        chunk_indices_per_buffer.push_back({i});
+        continue;
+      }
+      uint64_t first_chunk_idx = chunk_indices_per_buffer.back()[0];
+      uint64_t prev_chunk_idx = chunk_indices_per_buffer.back().back();
       uint64_t buf_size =
-          state_->ChunkEndOffset(i) - chunk_indices_per_buffer.back()[0];
-      if (buf_size < state_->options.readahead_buffer_size()) {
+          state_->ChunkEndOffset(i) - (*state_->chunk_offsets)[first_chunk_idx];
+      uint64_t gap_size =
+          (*state_->chunk_offsets)[i] - state_->ChunkEndOffset(prev_chunk_idx);
+      uint64_t effective_readahead =
+          state_->options.readahead_buffer_size() > 0
+              ? state_->options.readahead_buffer_size()
+              : (4ULL << 20);
+      if (buf_size <= effective_readahead &&
+          (state_->options.readahead_buffer_size() > 0 ||
+           gap_size <= (256ULL << 10))) {
         chunk_indices_per_buffer.back().push_back(i);
       } else {
         chunk_indices_per_buffer.push_back({i});
@@ -703,22 +1162,42 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
       [&](size_t buf_idx) -> absl::Status {
         auto buffer_chunks =
             absl::MakeConstSpan(chunk_indices_per_buffer[buf_idx]);
-        uint64_t buf_len = state_->ChunkEndOffset(buffer_chunks.back()) -
-                           (*state_->chunk_offsets)[buffer_chunks[0]];
+        const uint64_t chunk_idx_start = buffer_chunks.front();
+        const uint64_t chunk_idx_end = buffer_chunks.back();
+        const uint64_t range_start = (*state_->chunk_offsets)[chunk_idx_start];
+        const uint64_t range_end = state_->ChunkEndOffset(chunk_idx_end);
+        const uint64_t buf_len = range_end - range_start;
         AR_ENDO_JOB(
             "ArrayRecordReaderBase::ParallelReadRecordsWithIndices",
             absl::StrCat("buffer_idx: ", buf_idx, " buffer_len: ", buf_len));
-        MaskedReader masked_reader(riegeli::kClosed);
+        MaskedReader fallback_masked_reader(riegeli::kClosed);
+        InMemoryWindowSliceReader window_slice_reader(riegeli::kClosed);
+        riegeli::Reader* active_reader = nullptr;
         {
           AR_ENDO_SCOPE("MaskedReader");
-          masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[buffer_chunks[0]]),
-              buf_len);
+          if (state_->options.index_storage_option() ==
+              Options::IndexStorageOption::kInMemory) {
+            auto status_or_slice = state_->window_cache.GetOrFetchSlice(
+                &*reader, chunk_idx_start, chunk_idx_end, range_start,
+                range_end, state_->chunk_offsets->size(),
+                state_->footer_offset,
+                [&](uint64_t idx) { return (*state_->chunk_offsets)[idx]; },
+                [&](uint64_t idx) { return state_->ChunkEndOffset(idx); });
+            if (ABSL_PREDICT_FALSE(!status_or_slice.ok())) {
+              return status_or_slice.status();
+            }
+            window_slice_reader = *std::move(status_or_slice);
+            active_reader = &window_slice_reader;
+          } else {
+            fallback_masked_reader =
+                MaskedReader(reader->NewReader(range_start), buf_len);
+            active_reader = &fallback_masked_reader;
+          }
         }
         for (auto chunk_idx : buffer_chunks) {
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
-          masked_reader.Seek((*state_->chunk_offsets)[chunk_idx]);
-          riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
+          active_reader->Seek((*state_->chunk_offsets)[chunk_idx]);
+          riegeli::DefaultChunkReader<> chunk_reader(active_reader);
           Chunk chunk;
           if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
             return chunk_reader.status();
