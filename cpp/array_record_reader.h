@@ -317,11 +317,23 @@ class ArrayRecordReaderBase : public riegeli::Object {
   // Returns the writer options for files produced after 2022-10-10.
   std::optional<std::string> WriterOptionsString() const;
 
+  // Exports the parsed in-memory chunk offset index and footer metadata as a
+  // compact binary blob. Returns an empty string if `!ok()` or if
+  // `index_storage_option() != IndexStorageOption::kInMemory`.
+  std::string ExportIndexMetadata() const;
+
+  // Parses the file size from an exported index metadata blob without full
+  // deserialization. Returns true on success.
+  static bool ParseExportedFileSize(absl::string_view metadata,
+                                    uint64_t* file_size);
+
   uint64_t ChunkStartOffset(uint64_t chunk_idx) const;
   uint64_t ChunkEndOffset(uint64_t chunk_idx) const;
 
  protected:
-  explicit ArrayRecordReaderBase(Options options, ARThreadPool* pool);
+  explicit ArrayRecordReaderBase(
+      Options options, ARThreadPool* pool,
+      absl::string_view preloaded_index_metadata = "");
 
   // Move only. Closes `other` on move.
   ArrayRecordReaderBase(ArrayRecordReaderBase&& other) noexcept;
@@ -379,8 +391,10 @@ class ArrayRecordReader : public ArrayRecordReaderBase {
   // Will read from the `Reader` provided by `src`.
   explicit ArrayRecordReader(riegeli::Initializer<Src> src,
                              Options options = Options(),
-                             ARThreadPool* pool = nullptr)
-      : ArrayRecordReaderBase(std::move(options), pool),
+                             ARThreadPool* pool = nullptr,
+                             absl::string_view preloaded_index_metadata = "")
+      : ArrayRecordReaderBase(std::move(options), pool,
+                              preloaded_index_metadata),
         main_reader_(std::make_unique<TriStatePtr<riegeli::Reader>>(
             std::move(src))) {
     Initialize();
@@ -405,7 +419,9 @@ template <typename Src>
 explicit ArrayRecordReader(
     Src&& src,
     ArrayRecordReaderBase::Options options = ArrayRecordReaderBase::Options(),
-    ARThreadPool* pool = nullptr) -> ArrayRecordReader<riegeli::TargetT<Src>>;
+    ARThreadPool* pool = nullptr,
+    absl::string_view preloaded_index_metadata = "")
+    -> ArrayRecordReader<riegeli::TargetT<Src>>;
 
 }  // namespace array_record
 

@@ -312,11 +312,37 @@ class ArrayRecordModuleTest(absltest.TestCase):
           "readahead_buffer_size:16M,max_parallelism:1",
           file_reader_buffer_size=32768,
       )
+      idx_meta = reader.get_index_metadata()
+      self.assertIsInstance(idx_meta, bytes)
+      self.assertNotEmpty(idx_meta)
       self.assertEqual(
           reader.read([0, 17, 35]), [records[0], records[17], records[35]]
       )
       reader.close()
       self.assertEqual(mock_gcs.tcp_connections - conns_before, 1)
+
+      # Opening a gs:// reader with preloaded index_metadata should issue ZERO
+      # HTTP GETs during open/close, and only issue range GETs when reading
+      # records.
+      mock_gcs.requests.clear()
+      conns_before = mock_gcs.tcp_connections
+      lazy_reader = ArrayRecordReader(
+          "gs://test-bucket/shard-00000-of-00001",
+          "readahead_buffer_size:0,max_parallelism:0",
+          file_reader_buffer_size=32768,
+          index_metadata=idx_meta,
+      )
+      self.assertEqual(lazy_reader.num_records(), num_records)
+      self.assertEmpty(mock_gcs.requests)
+      self.assertEqual(mock_gcs.tcp_connections - conns_before, 0)
+      self.assertEqual(
+          lazy_reader.read([0, 17, 35]),
+          [records[0], records[17], records[35]],
+      )
+      self.assertLen(mock_gcs.requests, 3)
+      for req in mock_gcs.requests:
+        self.assertFalse(req["range"].startswith("bytes=-"))
+      lazy_reader.close()
     finally:
       if old_endpoint is None:
         os.environ.pop("CLOUD_STORAGE_EMULATOR_ENDPOINT", None)
