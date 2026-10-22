@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <future>  // NOLINT(build/c++11)
 #include <limits>
 #include <memory>
@@ -61,6 +62,11 @@ constexpr uint32_t kArrayRecordV1 = 1;
 
 // Magic number for ArrayRecord
 constexpr uint64_t kMagic = 0x71930e704fdae05eULL;
+
+// Binary format header for ExportIndexMetadata()
+constexpr absl::string_view kIndexMetadataMagic = "ARIX\x01";
+constexpr size_t kIndexMetadataFixedHeaderSize =
+    5 + 5 * sizeof(uint64_t) + sizeof(uint8_t) + sizeof(uint32_t);
 
 using riegeli::Annotate;
 using riegeli::Chunk;
@@ -107,9 +113,17 @@ class ArrayChunkOffset : public ChunkOffset {
         new ArrayChunkOffset(std::move(chunk_offsets)));
   };
 
+  static std::unique_ptr<ChunkOffset> FromVector(
+      std::vector<uint64_t> chunk_offsets) {
+    return std::unique_ptr<ChunkOffset>(
+        new ArrayChunkOffset(std::move(chunk_offsets)));
+  }
+
   uint64_t operator[](size_t idx) const override { return chunk_offsets_[idx]; }
 
   uint64_t size() const override { return chunk_offsets_.size(); }
+
+  const std::vector<uint64_t>& offsets() const { return chunk_offsets_; }
 
  private:
   ArrayChunkOffset(std::vector<uint64_t> chunk_offsets)
@@ -207,10 +221,15 @@ template <typename T>
 using IndexedPair = std::pair<uint64_t, T>;
 
 struct ArrayRecordReaderBase::ArrayRecordReaderState {
-  ArrayRecordReaderState(const Options options, ARThreadPool* pool)
-      : options(options), pool(pool) {}
+  ArrayRecordReaderState(const Options options, ARThreadPool* pool,
+                         absl::string_view preloaded_index_metadata = "")
+      : options(options),
+        pool(pool),
+        preloaded_index_metadata(preloaded_index_metadata) {}
   Options options;
   ARThreadPool* pool;
+  std::string preloaded_index_metadata;
+  uint64_t file_size = 0;
   uint64_t num_records = 0;
   uint64_t record_group_size = 0;
   uint64_t chunk_group_size = 0;
@@ -235,9 +254,11 @@ struct ArrayRecordReaderBase::ArrayRecordReaderState {
   }
 };
 
-ArrayRecordReaderBase::ArrayRecordReaderBase(Options options,
-                                             ARThreadPool* pool)
-    : state_(std::make_unique<ArrayRecordReaderState>(options, pool)) {}
+ArrayRecordReaderBase::ArrayRecordReaderBase(
+    Options options, ARThreadPool* pool,
+    absl::string_view preloaded_index_metadata)
+    : state_(std::make_unique<ArrayRecordReaderState>(
+          options, pool, preloaded_index_metadata)) {}
 
 ArrayRecordReaderBase::~ArrayRecordReaderBase() = default;
 
@@ -329,6 +350,90 @@ void ArrayRecordReaderBase::Initialize() {
   }
   state_->options.set_max_parallelism(max_parallelism);
 
+  if (!state_->preloaded_index_metadata.empty() &&
+      state_->options.index_storage_option() ==
+          Options::IndexStorageOption::kInMemory) {
+    absl::string_view meta = state_->preloaded_index_metadata;
+    if (meta.size() < kIndexMetadataFixedHeaderSize ||
+        meta.substr(0, kIndexMetadataMagic.size()) != kIndexMetadataMagic) {
+      Fail(InvalidArgumentError("Invalid preloaded_index_metadata header"));
+      return;
+    }
+    const char* ptr = meta.data() + kIndexMetadataMagic.size();
+    uint64_t file_size = 0;
+    uint64_t footer_offset = 0;
+    uint64_t num_records = 0;
+    uint64_t record_group_size = 0;
+    uint64_t num_chunks = 0;
+    uint8_t has_writer_options = 0;
+    uint32_t writer_options_len = 0;
+    std::memcpy(&file_size, ptr, sizeof(uint64_t));
+    ptr += sizeof(uint64_t);
+    std::memcpy(&footer_offset, ptr, sizeof(uint64_t));
+    ptr += sizeof(uint64_t);
+    std::memcpy(&num_records, ptr, sizeof(uint64_t));
+    ptr += sizeof(uint64_t);
+    std::memcpy(&record_group_size, ptr, sizeof(uint64_t));
+    ptr += sizeof(uint64_t);
+    std::memcpy(&num_chunks, ptr, sizeof(uint64_t));
+    ptr += sizeof(uint64_t);
+    std::memcpy(&has_writer_options, ptr, sizeof(uint8_t));
+    ptr += sizeof(uint8_t);
+    std::memcpy(&writer_options_len, ptr, sizeof(uint32_t));
+    ptr += sizeof(uint32_t);
+
+    const size_t remaining_after_header =
+        meta.size() - kIndexMetadataFixedHeaderSize;
+    if (writer_options_len > remaining_after_header ||
+        (remaining_after_header - writer_options_len) / sizeof(uint64_t) !=
+            num_chunks ||
+        (remaining_after_header - writer_options_len) % sizeof(uint64_t) != 0) {
+      Fail(InvalidArgumentError("Corrupted preloaded_index_metadata size"));
+      return;
+    }
+    if (file_size < kRiegeliBlockSize || footer_offset > file_size) {
+      Fail(InvalidArgumentError(
+          "Invalid file_size or footer_offset in preloaded_index_metadata"));
+      return;
+    }
+    state_->file_size = file_size;
+    state_->footer_offset = footer_offset;
+    state_->num_records = num_records;
+    state_->record_group_size = record_group_size;
+    if (has_writer_options) {
+      state_->writer_options = std::string(ptr, writer_options_len);
+    } else {
+      state_->writer_options = std::nullopt;
+    }
+    ptr += writer_options_len;
+
+    std::vector<uint64_t> offsets(num_chunks);
+    if (num_chunks > 0) {
+      std::memcpy(offsets.data(), ptr, num_chunks * sizeof(uint64_t));
+    }
+    state_->chunk_offsets = ArrayChunkOffset::FromVector(std::move(offsets));
+    std::string().swap(state_->preloaded_index_metadata);
+
+    if (!state_->chunk_offsets->empty()) {
+      if (state_->record_group_size <= 0) {
+        Fail(InvalidArgumentError("record_group_size cannot be zero"));
+        return;
+      }
+      uint64_t chunk_start_offset = (*state_->chunk_offsets)[0];
+      for (auto i : Seq(state_->chunk_offsets->size())) {
+        uint64_t buf_size = state_->ChunkEndOffset(i) - chunk_start_offset;
+        if (buf_size >= state_->options.readahead_buffer_size()) {
+          state_->chunk_group_size = i + 1;
+          break;
+        }
+      }
+      if (!state_->chunk_group_size) {
+        state_->chunk_group_size = state_->chunk_offsets->size();
+      }
+    }
+    return;
+  }
+
   AR_ENDO_TASK("Reading ArrayRecord footer");
   RiegeliFooterMetadata footer_metadata;
   ChunkDecoder footer_decoder;
@@ -345,6 +450,7 @@ void ArrayRecordReaderBase::Initialize() {
       return;
     }
     auto size = maybe_size.value();
+    state_->file_size = size;
     if (size < kRiegeliBlockSize) {
       Fail(
           InvalidArgumentError("ArrayRecord file should be at least 64KB big"));
@@ -943,6 +1049,69 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
 
 std::optional<std::string> ArrayRecordReaderBase::WriterOptionsString() const {
   return state_->writer_options;
+}
+
+bool ArrayRecordReaderBase::ParseExportedFileSize(absl::string_view metadata,
+                                                  uint64_t* file_size) {
+  if (metadata.size() < kIndexMetadataFixedHeaderSize ||
+      metadata.substr(0, kIndexMetadataMagic.size()) != kIndexMetadataMagic) {
+    return false;
+  }
+  if (file_size != nullptr) {
+    std::memcpy(file_size, metadata.data() + kIndexMetadataMagic.size(),
+                sizeof(uint64_t));
+  }
+  return true;
+}
+
+std::string ArrayRecordReaderBase::ExportIndexMetadata() const {
+  if (!ok() || state_ == nullptr ||
+      state_->options.index_storage_option() !=
+          Options::IndexStorageOption::kInMemory ||
+      state_->chunk_offsets == nullptr) {
+    return "";
+  }
+  const auto* array_offsets =
+      dynamic_cast<const ArrayChunkOffset*>(state_->chunk_offsets.get());
+  if (array_offsets == nullptr) {
+    return "";
+  }
+  const std::vector<uint64_t>& offsets = array_offsets->offsets();
+  const uint64_t num_chunks = offsets.size();
+  const uint8_t has_writer_options =
+      state_->writer_options.has_value() ? 1 : 0;
+  const uint32_t writer_options_len =
+      has_writer_options
+          ? static_cast<uint32_t>(state_->writer_options->size())
+          : 0;
+  const size_t total_size = kIndexMetadataFixedHeaderSize + writer_options_len +
+                            num_chunks * sizeof(uint64_t);
+  std::string out(total_size, '\0');
+  char* ptr = out.data();
+  std::memcpy(ptr, kIndexMetadataMagic.data(), kIndexMetadataMagic.size());
+  ptr += kIndexMetadataMagic.size();
+  std::memcpy(ptr, &state_->file_size, sizeof(uint64_t));
+  ptr += sizeof(uint64_t);
+  std::memcpy(ptr, &state_->footer_offset, sizeof(uint64_t));
+  ptr += sizeof(uint64_t);
+  std::memcpy(ptr, &state_->num_records, sizeof(uint64_t));
+  ptr += sizeof(uint64_t);
+  std::memcpy(ptr, &state_->record_group_size, sizeof(uint64_t));
+  ptr += sizeof(uint64_t);
+  std::memcpy(ptr, &num_chunks, sizeof(uint64_t));
+  ptr += sizeof(uint64_t);
+  std::memcpy(ptr, &has_writer_options, sizeof(uint8_t));
+  ptr += sizeof(uint8_t);
+  std::memcpy(ptr, &writer_options_len, sizeof(uint32_t));
+  ptr += sizeof(uint32_t);
+  if (writer_options_len > 0) {
+    std::memcpy(ptr, state_->writer_options->data(), writer_options_len);
+    ptr += writer_options_len;
+  }
+  if (num_chunks > 0) {
+    std::memcpy(ptr, offsets.data(), num_chunks * sizeof(uint64_t));
+  }
+  return out;
 }
 
 }  // namespace array_record

@@ -16,6 +16,9 @@ limitations under the License.
 #include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
+#include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -33,12 +36,80 @@ limitations under the License.
 #include "pybind11/pytypes.h"
 #include "pybind11/stl.h"
 #include "riegeli/base/maker.h"
+#include "riegeli/base/types.h"
 #include "riegeli/bytes/fd_reader.h"
 #include "riegeli/bytes/fd_writer.h"
+#include "riegeli/bytes/reader.h"
 #include "riegeli/gcs/gcs_object.h"
 #include "riegeli/gcs/gcs_reader.h"
 
 namespace py = pybind11;
+
+namespace {
+
+// A lightweight `riegeli::Reader` for GCS objects whose size and ArrayRecord
+// chunk index metadata have already been loaded in memory. Performs zero
+// network I/O on construction and delegates range reads to `riegeli::GcsReader`
+// via `NewReaderImpl()`.
+class LazyGcsReader : public riegeli::Reader {
+ public:
+  LazyGcsReader(google::cloud::storage::Client client,
+                riegeli::GcsObject object, riegeli::GcsReader::Options options,
+                uint64_t file_size)
+      : client_(std::move(client)),
+        object_(std::move(object)),
+        options_(std::move(options)),
+        file_size_(file_size) {
+    if (!object_.ok()) {
+      Fail(object_.status());
+    }
+  }
+
+  bool SupportsRandomAccess() override { return true; }
+  bool SupportsNewReader() override { return true; }
+
+ protected:
+  bool PullSlow(size_t min_length, size_t recommended_length) override {
+    return false;
+  }
+
+  bool SeekSlow(riegeli::Position new_pos) override {
+    if (!ok() || new_pos > file_size_) {
+      return false;
+    }
+    set_buffer();
+    set_limit_pos(new_pos);
+    return true;
+  }
+
+  std::optional<riegeli::Position> SizeImpl() override { return file_size_; }
+
+  std::unique_ptr<riegeli::Reader> NewReaderImpl(
+      riegeli::Position initial_pos) override {
+    if (!ok()) {
+      return nullptr;
+    }
+    const riegeli::Position read_from_offset =
+        std::min<uint64_t>(initial_pos, file_size_ > 0 ? file_size_ - 1 : 0);
+    auto reader = std::make_unique<riegeli::GcsReader>(
+        client_, object_, options_,
+        google::cloud::storage::ReadFromOffset(read_from_offset));
+    if (initial_pos > read_from_offset) {
+      if (reader->Pull()) {
+        reader->move_cursor(1);
+      }
+    }
+    return reader;
+  }
+
+ private:
+  google::cloud::storage::Client client_;
+  riegeli::GcsObject object_;
+  riegeli::GcsReader::Options options_;
+  uint64_t file_size_;
+};
+
+}  // namespace
 
 PYBIND11_MODULE(array_record_module, m) {
   using array_record::ArrayRecordReaderBase;
@@ -82,12 +153,18 @@ PYBIND11_MODULE(array_record_module, m) {
       });
   py::class_<ArrayRecordReaderBase>(m, "ArrayRecordReader")
       .def(py::init([](const std::string& path, const std::string& options,
+                       py::object index_metadata_arg,
                        const py::kwargs& kwargs) -> ArrayRecordReaderBase* {
              auto status_or_option =
                  ArrayRecordReaderBase::Options::FromString(options);
              if (!status_or_option.ok()) {
                throw py::value_error(
                    std::string(status_or_option.status().message()));
+             }
+             std::string index_metadata;
+             if (!index_metadata_arg.is_none()) {
+               index_metadata =
+                   std::string(py::cast<py::bytes>(index_metadata_arg));
              }
              riegeli::FdReaderBase::Options file_reader_options;
              riegeli::GcsReader::Options gcs_reader_options;
@@ -100,6 +177,21 @@ PYBIND11_MODULE(array_record_module, m) {
              // Release the GIL because IO is time consuming.
              py::gil_scoped_release scoped_release;
              if (absl::StartsWith(path, "gs://")) {
+               if (!index_metadata.empty() &&
+                   status_or_option->index_storage_option() ==
+                       ArrayRecordReaderBase::Options::IndexStorageOption::
+                           kInMemory) {
+                 uint64_t exported_file_size = 0;
+                 ArrayRecordReaderBase::ParseExportedFileSize(
+                     index_metadata, &exported_file_size);
+                 return new array_record::ArrayRecordReader(
+                     riegeli::Maker<LazyGcsReader>(
+                         google::cloud::storage::Client(),
+                         riegeli::GcsObject(path),
+                         std::move(gcs_reader_options), exported_file_size),
+                     status_or_option.value(),
+                     array_record::ArrayRecordGlobalPool(), index_metadata);
+               }
                const auto footer_prefetch_bytes =
                    status_or_option->footer_prefetch_bytes();
                return new array_record::ArrayRecordReader(
@@ -117,10 +209,11 @@ PYBIND11_MODULE(array_record_module, m) {
                    riegeli::Maker<riegeli::FdReader>(
                        path, std::move(file_reader_options)),
                    status_or_option.value(),
-                   array_record::ArrayRecordGlobalPool());
+                   array_record::ArrayRecordGlobalPool(), index_metadata);
              }
            }),
-           py::arg("path"), py::arg("options") = "", R"(
+           py::arg("path"), py::arg("options") = "",
+           py::arg("index_metadata") = py::none(), R"(
            ArrayRecordReader for fast sequential or random access.
 
            Args:
@@ -167,6 +260,10 @@ PYBIND11_MODULE(array_record_module, m) {
       .def("num_records", &ArrayRecordReaderBase::NumRecords)
       .def("record_index", &ArrayRecordReaderBase::RecordIndex)
       .def("writer_options_string", &ArrayRecordReaderBase::WriterOptionsString)
+      .def("get_index_metadata",
+           [](const ArrayRecordReaderBase& reader) {
+             return py::bytes(reader.ExportIndexMetadata());
+           })
       .def("seek",
            [](ArrayRecordReaderBase& reader, int64_t record_index) {
              if (!reader.SeekRecord(record_index)) {

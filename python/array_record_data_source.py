@@ -155,9 +155,22 @@ class _ReadInstruction:
   start: int
   end: int
   num_records: int = dataclasses.field(init=False)
+  index_metadata: bytes | None = dataclasses.field(
+      default=None, repr=False, compare=False
+  )
 
   def __post_init__(self):
     object.__setattr__(self, "num_records", self.end - self.start)
+
+
+def _extract_index_metadata(reader: Any) -> bytes | None:
+  """Extracts serialized in-memory index metadata from an ArrayRecordReader."""
+  if not hasattr(reader, "get_index_metadata"):
+    return None
+  idx_meta = reader.get_index_metadata()
+  if isinstance(idx_meta, bytes) and idx_meta:
+    return idx_meta
+  return None
 
 
 def _get_read_instructions(
@@ -166,6 +179,7 @@ def _get_read_instructions(
   """Constructs ReadInstructions for given paths."""
 
   def get_read_instruction(path: PathLikeOrFileInstruction) -> _ReadInstruction:
+    idx_meta = None
     if isinstance(path, FileInstruction):
       start = path.skip
       end = path.skip + path.take
@@ -179,8 +193,9 @@ def _get_read_instructions(
       reader = array_record_module.ArrayRecordReader(path)
       start = 0  # Using whole file.
       end = reader.num_records()
+      idx_meta = _extract_index_metadata(reader)
       reader.close()
-    return _ReadInstruction(path, start, end)
+    return _ReadInstruction(path, start, end, idx_meta)
 
   num_threads = _get_flag_value(_GRAIN_NUM_THREADS_COMPUTING_NUM_RECORDS)
   num_workers = min(len(paths), num_threads)
@@ -191,9 +206,23 @@ def _get_read_instructions(
   )
 
 
-def _create_reader(filename: epath.PathLike, additional_reader_options: str):
+def _create_reader(
+    filename: epath.PathLike,
+    additional_reader_options: str,
+    index_metadata: bytes | None = None,
+):
   """Returns an ArrayRecordReader for the given filename."""
   reader_options = f"readahead_buffer_size:0,{additional_reader_options}"
+  if index_metadata is not None:
+    try:
+      return array_record_module.ArrayRecordReader(
+          filename,
+          options=reader_options,
+          file_reader_buffer_size=32768,
+          index_metadata=index_metadata,
+      )
+    except TypeError:
+      pass
   return array_record_module.ArrayRecordReader(
       filename,
       options=reader_options,
@@ -291,6 +320,9 @@ class ArrayRecordDataSource:
     # We open readers lazily when we need to read from them.
     self._readers: List[Any] = [None] * len(self._read_instructions)
     self._lock = threading.Lock()
+    self._locks = [
+        threading.Lock() for _ in range(len(self._read_instructions))
+    ]
     self._num_records = sum(
         map(lambda x: x.num_records, self._read_instructions)
     )
@@ -352,11 +384,16 @@ class ArrayRecordDataSource:
     """Threadsafe method to create corresponding reader if it doesn't exist."""
     if self._readers[reader_idx] is not None:
       return
-    with self._lock:
+    with self._locks[reader_idx]:
       if self._readers[reader_idx] is not None:
         return
-      filename = self._read_instructions[reader_idx].filename
-      reader = _create_reader(filename, self._reader_options_string)
+      instruction = self._read_instructions[reader_idx]
+      filename = instruction.filename
+      reader = _create_reader(
+          filename,
+          self._reader_options_string,
+          index_metadata=instruction.index_metadata,
+      )
       _check_group_size(filename, reader)
       self._readers[reader_idx] = reader
 
@@ -410,11 +447,66 @@ class ArrayRecordDataSource:
         sorted_records[index] = record
     return sorted_records
 
+  def _populate_missing_index_metadata(self) -> None:
+    """Populates missing index_metadata in parallel before pickling."""
+    if "offloaded" in self._reader_options_string:
+      return
+    ar_reader_cls = getattr(
+        getattr(array_record_module, "_base_mod", array_record_module),
+        "ArrayRecordReader",
+        None,
+    )
+    if not hasattr(ar_reader_cls, "get_index_metadata"):
+      return
+    with self._lock:
+      missing_filenames = list(
+          dict.fromkeys(
+              inst.filename
+              for inst in self._read_instructions
+              if inst.index_metadata is None
+          )
+      )
+      if not missing_filenames:
+        return
+
+      def fetch_metadata(filename: str) -> Tuple[str, bytes | None]:
+        try:
+          reader = array_record_module.ArrayRecordReader(filename)
+          idx_meta = _extract_index_metadata(reader)
+          reader.close()
+          return filename, idx_meta
+        except Exception:  # pylint: disable=broad-except
+          return filename, None
+
+      num_threads = _get_flag_value(_GRAIN_NUM_THREADS_COMPUTING_NUM_RECORDS)
+      num_workers = min(len(missing_filenames), num_threads)
+      results = _run_in_parallel(
+          function=fetch_metadata,
+          list_of_kwargs_to_function=[
+              {"filename": fn} for fn in missing_filenames
+          ],
+          num_workers=num_workers,
+      )
+      meta_by_filename = dict(results)
+      self._read_instructions = [
+          _ReadInstruction(
+              inst.filename,
+              inst.start,
+              inst.end,
+              inst.index_metadata
+              if inst.index_metadata is not None
+              else meta_by_filename.get(inst.filename),
+          )
+          for inst in self._read_instructions
+      ]
+
   def __getstate__(self):
     logging.debug("__getstate__ for ArrayRecordDataSource is called.")
+    self._populate_missing_index_metadata()
     state = self.__dict__.copy()
     del state["_readers"]
     del state["_lock"]
+    state.pop("_locks", None)
     return state
 
   def __setstate__(self, state):
@@ -424,6 +516,9 @@ class ArrayRecordDataSource:
     # need to re-open the same files as before pickling.
     self._readers = [None] * len(self._read_instructions)
     self._lock = threading.Lock()
+    self._locks = [
+        threading.Lock() for _ in range(len(self._read_instructions))
+    ]
 
   def __repr__(self) -> str:
     """Storing a hash of paths since paths can be a very long list."""

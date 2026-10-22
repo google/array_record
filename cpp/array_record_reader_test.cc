@@ -787,5 +787,66 @@ TEST(ArrayRecordReaderTest, FooterEndsAtExactBlockBoundaryWithoutPadding) {
   }
 }
 
+TEST(ArrayRecordReaderTest, ExportAndPreloadIndexMetadataZeroOpenIO) {
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(1).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> test_str{"rec0_payload", "rec1_payload",
+                                    "rec2_payload", "rec3_payload"};
+  for (const auto& s : test_str) {
+    EXPECT_TRUE(writer.WriteRecord(s));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  auto first_reader = ArrayRecordReader(
+      riegeli::Maker<riegeli::StringReader>(encoded),
+      ArrayRecordReaderBase::Options(), nullptr);
+  ASSERT_TRUE(first_reader.status().ok());
+  std::string index_metadata = first_reader.ExportIndexMetadata();
+  EXPECT_FALSE(index_metadata.empty());
+  uint64_t parsed_file_size = 0;
+  EXPECT_TRUE(ArrayRecordReaderBase::ParseExportedFileSize(index_metadata,
+                                                           &parsed_file_size));
+  EXPECT_EQ(parsed_file_size, encoded.size());
+  ASSERT_TRUE(first_reader.Close());
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  int seek_count = 0;
+  auto second_reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(
+          encoded, 1 << 20, &pull_count, &new_reader_count, &seek_count),
+      ArrayRecordReaderBase::Options(), nullptr, index_metadata);
+  ASSERT_TRUE(second_reader.status().ok()) << second_reader.status().message();
+  // Zero I/O on the backing reader during Initialize()!
+  EXPECT_EQ(pull_count, 0);
+  EXPECT_EQ(seek_count, 0);
+  EXPECT_EQ(new_reader_count, 0);
+  EXPECT_EQ(second_reader.NumRecords(), test_str.size());
+  EXPECT_EQ(second_reader.RecordGroupSize(), 1);
+  EXPECT_EQ(second_reader.ExportIndexMetadata(), index_metadata);
+
+  std::vector<uint64_t> indices = {3, 1, 0};
+  ASSERT_TRUE(second_reader
+                  .ParallelReadRecordsWithIndices(
+                      indices,
+                      [&](uint64_t indices_idx,
+                          absl::string_view record) -> absl::Status {
+                        EXPECT_EQ(record, test_str[indices[indices_idx]]);
+                        return absl::OkStatus();
+                      })
+                  .ok());
+  ASSERT_TRUE(second_reader.Close());
+
+  // Corrupted preloaded_index_metadata should fail with InvalidArgumentError.
+  auto bad_reader = ArrayRecordReader(
+      riegeli::Maker<riegeli::StringReader>(encoded),
+      ArrayRecordReaderBase::Options(), nullptr, "bad_metadata");
+  EXPECT_FALSE(bad_reader.status().ok());
+  EXPECT_EQ(bad_reader.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 }  // namespace
 }  // namespace array_record
