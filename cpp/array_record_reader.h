@@ -132,11 +132,87 @@ class ArrayRecordReaderBase : public riegeli::Object {
     }
     uint64_t footer_prefetch_bytes() const { return footer_prefetch_bytes_; }
 
+    static constexpr uint64_t kDefaultCacheBlockBytes = 0;
+    Options& set_cache_block_bytes(uint64_t cache_block_bytes) {
+      cache_block_bytes_ = cache_block_bytes;
+      return *this;
+    }
+    uint64_t cache_block_bytes() const { return cache_block_bytes_; }
+
+    static constexpr uint64_t kDefaultColdStartReads = 0;
+    Options& set_cold_start_reads(uint64_t cold_start_reads) {
+      cold_start_reads_ = cold_start_reads;
+      return *this;
+    }
+    uint64_t cold_start_reads() const { return cold_start_reads_; }
+
+    static constexpr uint64_t kDefaultColdStartBlockBytes = 0;
+    Options& set_cold_start_block_bytes(uint64_t cold_start_block_bytes) {
+      cold_start_block_bytes_ = cold_start_block_bytes;
+      return *this;
+    }
+    uint64_t cold_start_block_bytes() const { return cold_start_block_bytes_; }
+
+    Options& set_align_blocks(bool align_blocks) {
+      align_blocks_ = align_blocks;
+      return *this;
+    }
+    bool align_blocks() const { return align_blocks_; }
+
+    static constexpr uint64_t kDefaultMaxCachedBytes = 0;
+    Options& set_max_cached_bytes(uint64_t max_cached_bytes) {
+      max_cached_bytes_ = max_cached_bytes;
+      return *this;
+    }
+    uint64_t max_cached_bytes() const { return max_cached_bytes_; }
+
+    Options& set_fast_single_index(bool fast_single_index) {
+      fast_single_index_ = fast_single_index;
+      return *this;
+    }
+    bool fast_single_index() const { return fast_single_index_; }
+
+    static constexpr uint64_t kDefaultMaxParallelBlockFetches = 0;
+    Options& set_max_parallel_block_fetches(
+        uint64_t max_parallel_block_fetches) {
+      max_parallel_block_fetches_ = max_parallel_block_fetches;
+      return *this;
+    }
+    uint64_t max_parallel_block_fetches() const {
+      return max_parallel_block_fetches_;
+    }
+
+    Options& set_wait_for_block_slot(bool wait_for_block_slot) {
+      wait_for_block_slot_ = wait_for_block_slot;
+      return *this;
+    }
+    bool wait_for_block_slot() const { return wait_for_block_slot_; }
+
+    static constexpr uint64_t kDefaultHostMaxParallelBlockFetches = 0;
+    Options& set_host_max_parallel_block_fetches(
+        uint64_t host_max_parallel_block_fetches) {
+      host_max_parallel_block_fetches_ = host_max_parallel_block_fetches;
+      return *this;
+    }
+    uint64_t host_max_parallel_block_fetches() const {
+      return host_max_parallel_block_fetches_;
+    }
+
    private:
     std::optional<uint32_t> max_parallelism_ = std::nullopt;
     uint64_t readahead_buffer_size_ = kDefaultReadaheadBufferSize;
     IndexStorageOption index_storage_option_ = IndexStorageOption::kInMemory;
     uint64_t footer_prefetch_bytes_ = kDefaultFooterPrefetchBytes;
+    uint64_t cache_block_bytes_ = kDefaultCacheBlockBytes;
+    uint64_t cold_start_reads_ = kDefaultColdStartReads;
+    uint64_t cold_start_block_bytes_ = kDefaultColdStartBlockBytes;
+    bool align_blocks_ = true;
+    uint64_t max_cached_bytes_ = kDefaultMaxCachedBytes;
+    bool fast_single_index_ = true;
+    uint64_t max_parallel_block_fetches_ = kDefaultMaxParallelBlockFetches;
+    bool wait_for_block_slot_ = true;
+    uint64_t host_max_parallel_block_fetches_ =
+        kDefaultHostMaxParallelBlockFetches;
   };
 
   // Reads the entire file in parallel and invokes the callback function of

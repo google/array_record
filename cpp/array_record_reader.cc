@@ -16,17 +16,24 @@ limitations under the License.
 #include "cpp/array_record_reader.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>  // NOLINT(build/c++11)
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <future>  // NOLINT(build/c++11)
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <queue>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/base/optimization.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
@@ -34,6 +41,8 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
@@ -153,9 +162,104 @@ class OffloadedChunkOffset : public ChunkOffset {
   uint64_t num_chunks_;
 };
 
+namespace {
+
+std::optional<uint64_t> ParseEnvBytes(const char* name) {
+  const char* val = std::getenv(name);
+  if (val == nullptr || val[0] == '\0') return std::nullopt;
+  std::string s(val);
+  if (s.size() >= 2 && (s.back() == 'B' || s.back() == 'b')) {
+    char prev = s[s.size() - 2];
+    if (prev < '0' || prev > '9') {
+      s.pop_back();
+    }
+  }
+  uint64_t out = 0;
+  OptionsParser parser;
+  parser.AddOption(
+      "v", ValueParser::Bytes(0, uint64_t{64} * 1024 * 1024 * 1024, &out));
+  if (parser.FromString(absl::StrCat("v:", s))) {
+    return out;
+  }
+  char* end = nullptr;
+  unsigned long long parsed = std::strtoull(val, &end, 10);  // NOLINT
+  if (end != val && *end == '\0') return static_cast<uint64_t>(parsed);
+  return std::nullopt;
+}
+
+std::optional<bool> ParseEnvBool(const char* name) {
+  const char* val = std::getenv(name);
+  if (val == nullptr || val[0] == '\0') return std::nullopt;
+  if (std::strcmp(val, "0") == 0 || std::strcmp(val, "false") == 0 ||
+      std::strcmp(val, "FALSE") == 0) {
+    return false;
+  }
+  return true;
+}
+
+class OffsetBufferReader : public riegeli::Reader {
+ public:
+  OffsetBufferReader(absl::string_view data, riegeli::Position start_pos) {
+    set_buffer(data.data(), data.size());
+    set_limit_pos(start_pos + data.size());
+  }
+
+ protected:
+  bool PullSlow(size_t min_length, size_t recommended_length) override {
+    Fail(FailedPreconditionError("Should not pull beyond OffsetBufferReader"));
+    return false;
+  }
+};
+
+ABSL_CONST_INIT absl::Mutex g_host_block_mu(absl::kConstInit);
+absl::CondVar& GetHostBlockCv() {
+  static auto* cv = new absl::CondVar();
+  return *cv;
+}
+std::atomic<uint64_t> g_active_host_block_fetches{0};
+
+// Waits on `cv` until signaled or until the steady-clock `deadline` passes.
+void WaitUntilSteadyDeadline(absl::CondVar& cv, absl::Mutex* mu,
+                             std::chrono::steady_clock::time_point deadline)
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu) {
+  const auto now = std::chrono::steady_clock::now();
+  if (deadline <= now) return;
+  cv.WaitWithTimeout(mu, absl::FromChrono(deadline - now));
+}
+
+}  // namespace
+
 absl::StatusOr<ArrayRecordReaderBase::Options>
 ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
   ArrayRecordReaderBase::Options options;
+  if (auto v = ParseEnvBytes("ARRAY_RECORD_CACHE_BLOCK_BYTES")) {
+    options.set_cache_block_bytes(*v);
+  }
+  if (auto v = ParseEnvBytes("ARRAY_RECORD_COLD_START_READS")) {
+    options.set_cold_start_reads(*v);
+  }
+  if (auto v = ParseEnvBytes("ARRAY_RECORD_COLD_START_BLOCK_BYTES")) {
+    options.set_cold_start_block_bytes(*v);
+  }
+  if (auto v = ParseEnvBool("ARRAY_RECORD_ALIGN_BLOCKS")) {
+    options.set_align_blocks(*v);
+  }
+  if (auto v = ParseEnvBytes("ARRAY_RECORD_MAX_CACHED_BYTES")) {
+    options.set_max_cached_bytes(*v);
+  }
+  if (auto v = ParseEnvBool("ARRAY_RECORD_FAST_SINGLE_INDEX")) {
+    options.set_fast_single_index(*v);
+  }
+  if (auto v = ParseEnvBytes("ARRAY_RECORD_MAX_PARALLEL_BLOCK_FETCHES")) {
+    options.set_max_parallel_block_fetches(*v);
+  }
+  if (auto v = ParseEnvBool("ARRAY_RECORD_WAIT_FOR_BLOCK_SLOT")) {
+    options.set_wait_for_block_slot(*v);
+  }
+  if (auto v = ParseEnvBytes("ARRAY_RECORD_HOST_MAX_PARALLEL_BLOCK_FETCHES")) {
+    options.set_host_max_parallel_block_fetches(*v);
+  }
+
   OptionsParser options_parser;
   // Parallelism
   int32_t max_parallelism = -1;
@@ -188,6 +292,51 @@ ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
           ValueParser::Bytes(/*min_value=*/0,
                              /*max_value=*/1024 * 1024 * 1024,
                              &options.footer_prefetch_bytes_)));
+  // Consume-once random access block cache options
+  options_parser.AddOption(
+      "cache_block_bytes",
+      ValueParser::Or(
+          ValueParser::Enum({{"auto", kDefaultCacheBlockBytes}},
+                            &options.cache_block_bytes_),
+          ValueParser::Bytes(/*min_value=*/0,
+                             /*max_value=*/uint64_t{16} * 1024 * 1024 * 1024,
+                             &options.cache_block_bytes_)));
+  options_parser.AddOption("cold_start_reads",
+                           ValueParser::Bytes(uint64_t{0}, uint64_t{1000000},
+                                              &options.cold_start_reads_));
+  options_parser.AddOption(
+      "cold_start_block_bytes",
+      ValueParser::Bytes(/*min_value=*/0,
+                         /*max_value=*/uint64_t{16} * 1024 * 1024 * 1024,
+                         &options.cold_start_block_bytes_));
+  options_parser.AddOption(
+      "align_blocks",
+      ValueParser::Enum(
+          {{"true", true}, {"false", false}, {"1", true}, {"0", false}},
+          &options.align_blocks_));
+  options_parser.AddOption(
+      "max_cached_bytes",
+      ValueParser::Bytes(/*min_value=*/0,
+                         /*max_value=*/uint64_t{64} * 1024 * 1024 * 1024,
+                         &options.max_cached_bytes_));
+  options_parser.AddOption(
+      "fast_single_index",
+      ValueParser::Enum(
+          {{"true", true}, {"false", false}, {"1", true}, {"0", false}},
+          &options.fast_single_index_));
+  options_parser.AddOption(
+      "max_parallel_block_fetches",
+      ValueParser::Bytes(uint64_t{0}, uint64_t{1000000},
+                         &options.max_parallel_block_fetches_));
+  options_parser.AddOption(
+      "wait_for_block_slot",
+      ValueParser::Enum(
+          {{"true", true}, {"false", false}, {"1", true}, {"0", false}},
+          &options.wait_for_block_slot_));
+  options_parser.AddOption(
+      "host_max_parallel_block_fetches",
+      ValueParser::Bytes(uint64_t{0}, uint64_t{1000000},
+                         &options.host_max_parallel_block_fetches_));
   if (!options_parser.FromString(text)) {
     return options_parser.status();
   }
@@ -227,11 +376,106 @@ struct ArrayRecordReaderBase::ArrayRecordReaderState {
   // Writer options for debugging purposes.
   std::optional<std::string> writer_options = std::nullopt;
 
+  // Singleflight consume-once random access chunk cache.
+  enum class ChunkCacheState : uint8_t {
+    kUncached = 0,
+    kFetching = 1,
+    kCached = 2,
+    kConsumed = 3,
+  };
+  struct ChunkCacheEntry {
+    std::string data;
+    uint32_t remaining_reads = 1;
+    ChunkCacheState state = ChunkCacheState::kUncached;
+  };
+  mutable absl::Mutex cache_mu;
+  mutable absl::CondVar cache_cv;
+  mutable bool cache_initialized = false;
+  mutable std::vector<ChunkCacheEntry> chunk_cache;
+  mutable std::vector<std::pair<uint64_t, uint64_t>> block_ranges;
+  mutable std::vector<uint32_t> chunk_to_block;
+  mutable std::atomic<uint64_t> cache_misses{0};
+  mutable std::atomic<int64_t> cached_bytes{0};
+  mutable uint64_t active_block_fetches = 0;
+  mutable uint64_t active_cold_fetches = 0;
+  mutable uint64_t completed_block_fetches = 0;
+  mutable uint64_t next_read_ticket = 0;
+  mutable std::set<uint64_t> waiting_tickets;
+  mutable uint64_t cfg_over_par_wait_ms = 0;
+  mutable uint64_t cfg_over_par_block_bytes = 0;
+  mutable bool cfg_align_subblocks = true;
+  mutable bool cfg_fifo_slots = false;
+  mutable bool cfg_lifo_slots = false;
+  mutable uint64_t cfg_max_slot_wait_ms = 0;
+  mutable bool cfg_ticket_cold_start = false;
+  mutable bool cfg_wait_cold_complete = false;
+  mutable bool cfg_reset_wait_on_progress = false;
+  mutable bool cfg_rank0_only_fallback = false;
+  mutable uint64_t cfg_fetching_wait_ms = 0;
+  mutable uint64_t cfg_rank_wait_step_ms = 0;
+  mutable uint64_t cfg_old_ticket_slot_guard_ms = 0;
+
   uint64_t ChunkEndOffset(uint64_t chunk_idx) const {
     if (chunk_idx == chunk_offsets->size() - 1) {
       return footer_offset;
     }
     return (*chunk_offsets)[chunk_idx + 1];
+  }
+
+  void EnsureCacheInitializedLocked() const {
+    if (cache_initialized) return;
+    cfg_over_par_wait_ms =
+        ParseEnvBytes("ARRAY_RECORD_OVER_PAR_WAIT_MS").value_or(950);
+    cfg_over_par_block_bytes =
+        ParseEnvBytes("ARRAY_RECORD_OVER_PAR_BLOCK_BYTES").value_or(0);
+    cfg_align_subblocks =
+        ParseEnvBool("ARRAY_RECORD_ALIGN_SUBBLOCKS").value_or(true);
+    cfg_fifo_slots =
+        ParseEnvBool("ARRAY_RECORD_FIFO_BLOCK_SLOTS").value_or(false);
+    cfg_lifo_slots =
+        ParseEnvBool("ARRAY_RECORD_LIFO_BLOCK_SLOTS").value_or(true);
+    cfg_max_slot_wait_ms =
+        ParseEnvBytes("ARRAY_RECORD_MAX_SLOT_WAIT_MS").value_or(0);
+    cfg_ticket_cold_start =
+        ParseEnvBool("ARRAY_RECORD_TICKET_COLD_START").value_or(false);
+    cfg_wait_cold_complete =
+        ParseEnvBool("ARRAY_RECORD_WAIT_COLD_COMPLETE").value_or(false);
+    cfg_reset_wait_on_progress =
+        ParseEnvBool("ARRAY_RECORD_RESET_WAIT_ON_PROGRESS").value_or(false);
+    cfg_rank0_only_fallback =
+        ParseEnvBool("ARRAY_RECORD_RANK0_ONLY_FALLBACK").value_or(false);
+    cfg_fetching_wait_ms =
+        ParseEnvBytes("ARRAY_RECORD_FETCHING_WAIT_MS").value_or(950);
+    cfg_rank_wait_step_ms =
+        ParseEnvBytes("ARRAY_RECORD_RANK_WAIT_STEP_MS").value_or(0);
+    cfg_old_ticket_slot_guard_ms =
+        ParseEnvBytes("ARRAY_RECORD_OLD_TICKET_SLOT_GUARD_MS").value_or(0);
+    const uint64_t num_chunks = chunk_offsets->size();
+    chunk_cache.resize(num_chunks);
+    const uint32_t group_sz =
+        static_cast<uint32_t>(std::max<uint64_t>(1, record_group_size));
+    for (uint64_t c = 0; c < num_chunks; ++c) {
+      chunk_cache[c].remaining_reads = group_sz;
+    }
+    const uint64_t block_bytes = options.cache_block_bytes();
+    if (block_bytes > 0 && options.align_blocks() && num_chunks > 0) {
+      chunk_to_block.resize(num_chunks);
+      uint64_t cur_start = 0;
+      uint64_t cur_start_offset = (*chunk_offsets)[0];
+      for (uint64_t c = 0; c < num_chunks; ++c) {
+        const uint64_t c_end_offset = ChunkEndOffset(c);
+        if (c > cur_start && c_end_offset - cur_start_offset > block_bytes) {
+          block_ranges.emplace_back(cur_start, c);
+          cur_start = c;
+          cur_start_offset = (*chunk_offsets)[c];
+        }
+        chunk_to_block[c] = static_cast<uint32_t>(block_ranges.size());
+      }
+      if (cur_start < num_chunks) {
+        block_ranges.emplace_back(cur_start, num_chunks);
+      }
+    }
+    cache_initialized = true;
   }
 };
 
@@ -646,8 +890,488 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
   if (!ok()) {
     return status();
   }
-  if (state_->chunk_offsets->empty()) {
+  if (state_->chunk_offsets->empty() || indices.empty()) {
     return absl::OkStatus();
+  }
+
+  const uint64_t num_chunks = state_->chunk_offsets->size();
+  const uint64_t cache_block_bytes = state_->options.cache_block_bytes();
+  const bool use_cache = cache_block_bytes > 0;
+
+  if (indices.size() == 1 &&
+      (state_->options.fast_single_index() || use_cache)) {
+    const uint64_t record_idx = indices[0];
+    if (record_idx >= state_->num_records) {
+      return OutOfRangeError("index %d out of bound %d", record_idx,
+                             state_->num_records);
+    }
+    const uint64_t chunk_idx = record_idx / state_->record_group_size;
+    if (chunk_idx >= num_chunks) {
+      return OutOfRangeError("chunk_idx out of bounds");
+    }
+    const uint64_t local_idx =
+        record_idx - chunk_idx * state_->record_group_size;
+
+    auto decode_and_invoke = [&](absl::string_view raw_chunk,
+                                 uint64_t c_start) -> absl::Status {
+      OffsetBufferReader offset_reader(raw_chunk, c_start);
+      riegeli::DefaultChunkReader<> chunk_reader(&offset_reader);
+      Chunk chunk;
+      if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
+        return chunk_reader.status();
+      }
+      ChunkDecoder decoder;
+      if (ABSL_PREDICT_FALSE(!decoder.Decode(chunk))) {
+        return decoder.status();
+      }
+      decoder.SetIndex(local_idx);
+      absl::string_view record;
+      if (ABSL_PREDICT_FALSE(!decoder.ReadRecord(record))) {
+        return decoder.status();
+      }
+      auto s = callback(0, record);
+      if (ABSL_PREDICT_FALSE(!s.ok())) {
+        return s;
+      }
+      if (ABSL_PREDICT_FALSE(!decoder.Close())) {
+        return decoder.status();
+      }
+      if (ABSL_PREDICT_FALSE(!chunk_reader.Close())) {
+        return chunk_reader.status();
+      }
+      return absl::OkStatus();
+    };
+
+    const uint64_t c_start = (*state_->chunk_offsets)[chunk_idx];
+    const uint64_t c_end = state_->ChunkEndOffset(chunk_idx);
+    const uint64_t c_len = c_end - c_start;
+
+    if (!use_cache) {
+      auto reader = get_backing_reader();
+      std::unique_ptr<Reader> sub_reader = reader->NewReader(c_start);
+      if (sub_reader == nullptr || !sub_reader->ok()) {
+        return sub_reader ? sub_reader->status()
+                          : InvalidArgumentError("Could not create reader");
+      }
+      std::string raw_chunk(c_len, '\0');
+      if (!sub_reader->Read(c_len, raw_chunk.data())) {
+        return Annotate(sub_reader->status(),
+                        "Could not read chunk from underlying reader");
+      }
+      return decode_and_invoke(raw_chunk, c_start);
+    }
+
+    using ChunkCacheState = ArrayRecordReaderState::ChunkCacheState;
+    std::string raw_chunk;
+    uint64_t fetch_start = chunk_idx;
+    uint64_t fetch_end = chunk_idx + 1;
+    bool need_fetch = false;
+    bool counted_block_fetch = false;
+    bool counted_cold_fetch = false;
+    bool counted_host_fetch = false;
+    {
+      absl::MutexLock lock(state_->cache_mu);
+      state_->EnsureCacheInitializedLocked();
+      const uint64_t ticket = state_->next_read_ticket++;
+      const uint64_t cold_reads = state_->options.cold_start_reads();
+      const uint64_t max_par_blocks =
+          state_->options.max_parallel_block_fetches();
+      const uint64_t host_max_par =
+          state_->options.host_max_parallel_block_fetches();
+      const bool wait_slot = state_->options.wait_for_block_slot();
+      const uint64_t over_par_wait_ms = state_->cfg_over_par_wait_ms;
+      const uint64_t over_par_block_bytes = state_->cfg_over_par_block_bytes;
+      const bool align_subblocks = state_->cfg_align_subblocks;
+      const bool fifo_slots = state_->cfg_fifo_slots;
+      const bool lifo_slots = state_->cfg_lifo_slots;
+      const uint64_t max_slot_wait_ms = state_->cfg_max_slot_wait_ms;
+      const auto enter_time = std::chrono::steady_clock::now();
+      const auto slot_wait_deadline =
+          max_slot_wait_ms > 0
+              ? enter_time + std::chrono::milliseconds(max_slot_wait_ms)
+              : std::chrono::steady_clock::time_point::max();
+      const bool ticket_cold_start = state_->cfg_ticket_cold_start;
+      const bool wait_cold_complete = state_->cfg_wait_cold_complete;
+      const bool reset_wait_on_progress = state_->cfg_reset_wait_on_progress;
+      const bool rank0_only_fallback = state_->cfg_rank0_only_fallback;
+      const uint64_t fetching_wait_ms = state_->cfg_fetching_wait_ms;
+      const uint64_t rank_wait_step_ms = state_->cfg_rank_wait_step_ms;
+      const uint64_t old_ticket_slot_guard_ms =
+          state_->cfg_old_ticket_slot_guard_ms;
+      const auto fetching_deadline =
+          fetching_wait_ms > 0
+              ? enter_time + std::chrono::milliseconds(fetching_wait_ms)
+              : std::chrono::steady_clock::time_point::max();
+      bool deadline_started = !rank0_only_fallback;
+      auto wait_deadline =
+          over_par_wait_ms > 0
+              ? enter_time + std::chrono::milliseconds(over_par_wait_ms)
+              : std::chrono::steady_clock::time_point::min();
+      uint64_t seen_completed_blocks = state_->completed_block_fetches;
+      bool can_take_slot = true;
+      while (true) {
+        if (state_->chunk_cache[chunk_idx].state ==
+            ChunkCacheState::kFetching) {
+          state_->waiting_tickets.erase(ticket);
+          if (fetching_wait_ms > 0) {
+            if (std::chrono::steady_clock::now() >= fetching_deadline) {
+              break;
+            }
+            WaitUntilSteadyDeadline(state_->cache_cv, &state_->cache_mu,
+                                    fetching_deadline);
+          } else {
+            state_->cache_cv.Wait(&state_->cache_mu);
+          }
+          continue;
+        }
+        if (state_->chunk_cache[chunk_idx].state !=
+            ChunkCacheState::kUncached) {
+          break;
+        }
+        const bool is_cold_wait =
+            ticket_cold_start
+                ? (ticket < cold_reads)
+                : (state_->cache_misses.load(std::memory_order_relaxed) <
+                   cold_reads);
+        if (is_cold_wait) {
+          break;
+        }
+        if (wait_cold_complete && state_->active_cold_fetches > 0) {
+          state_->waiting_tickets.insert(ticket);
+          state_->cache_cv.Wait(&state_->cache_mu);
+          continue;
+        }
+        if (reset_wait_on_progress &&
+            state_->completed_block_fetches != seen_completed_blocks) {
+          seen_completed_blocks = state_->completed_block_fetches;
+          if (over_par_wait_ms > 0) {
+            wait_deadline = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(over_par_wait_ms);
+          }
+        }
+        const uint64_t avail_shard =
+            (max_par_blocks == 0)
+                ? UINT64_MAX
+                : ((state_->active_block_fetches < max_par_blocks)
+                       ? (max_par_blocks - state_->active_block_fetches)
+                       : 0);
+        const uint64_t cur_host =
+            g_active_host_block_fetches.load(std::memory_order_relaxed);
+        const uint64_t avail_host =
+            (host_max_par == 0)
+                ? UINT64_MAX
+                : ((cur_host < host_max_par) ? (host_max_par - cur_host) : 0);
+        const uint64_t avail_slots = std::min(avail_shard, avail_host);
+        can_take_slot = (avail_slots > 0);
+        const auto now_tp = std::chrono::steady_clock::now();
+        if (max_slot_wait_ms > 0 && now_tp > slot_wait_deadline) {
+          can_take_slot = false;
+        }
+        uint64_t rank = 0;
+        if (fifo_slots || lifo_slots) {
+          state_->waiting_tickets.insert(ticket);
+          const auto it = state_->waiting_tickets.find(ticket);
+          rank = static_cast<uint64_t>(
+              std::distance(state_->waiting_tickets.begin(), it));
+          if (fifo_slots) {
+            can_take_slot = can_take_slot && (rank < avail_slots);
+          } else {
+            const uint64_t rank_from_back = static_cast<uint64_t>(
+                std::distance(it, state_->waiting_tickets.end()) - 1);
+            can_take_slot = can_take_slot && (rank_from_back < avail_slots);
+          }
+          if (old_ticket_slot_guard_ms > 0 && rank == 0 &&
+              now_tp > enter_time + std::chrono::milliseconds(
+                                        old_ticket_slot_guard_ms)) {
+            can_take_slot = false;
+          }
+        }
+        if (rank0_only_fallback && rank == 0 && !deadline_started) {
+          deadline_started = true;
+          if (over_par_wait_ms > 0) {
+            wait_deadline =
+                now_tp + std::chrono::milliseconds(over_par_wait_ms);
+          }
+        }
+        const auto eff_wait_deadline =
+            (over_par_wait_ms > 0 && rank_wait_step_ms > 0)
+                ? (wait_deadline +
+                   std::chrono::milliseconds(rank * rank_wait_step_ms))
+                : wait_deadline;
+        if (!can_take_slot) {
+          if (wait_slot || (rank0_only_fallback && rank > 0)) {
+            if (avail_shard > 0 && avail_host == 0) {
+              state_->cache_cv.WaitWithTimeout(&state_->cache_mu,
+                                               absl::Milliseconds(5));
+            } else {
+              state_->cache_cv.Wait(&state_->cache_mu);
+            }
+            continue;
+          }
+          if (over_par_wait_ms > 0 && now_tp < eff_wait_deadline) {
+            if (avail_shard > 0 && avail_host == 0) {
+              const auto step = std::min(eff_wait_deadline,
+                                         now_tp + std::chrono::milliseconds(5));
+              WaitUntilSteadyDeadline(state_->cache_cv, &state_->cache_mu,
+                                      step);
+            } else {
+              WaitUntilSteadyDeadline(state_->cache_cv, &state_->cache_mu,
+                                      eff_wait_deadline);
+            }
+            continue;
+          }
+        }
+        break;
+      }
+      state_->waiting_tickets.erase(ticket);
+      if (rank0_only_fallback && !state_->waiting_tickets.empty()) {
+        state_->cache_cv.SignalAll();
+      }
+      auto& entry = state_->chunk_cache[chunk_idx];
+      if (entry.state == ChunkCacheState::kCached) {
+        const size_t sz = entry.data.size();
+        if (entry.remaining_reads <= 1) {
+          raw_chunk = std::move(entry.data);
+          std::string().swap(entry.data);
+          entry.remaining_reads = 0;
+          entry.state = ChunkCacheState::kConsumed;
+          state_->cached_bytes.fetch_sub(static_cast<int64_t>(sz),
+                                         std::memory_order_relaxed);
+        } else {
+          raw_chunk = entry.data;
+          entry.remaining_reads--;
+        }
+      } else if (entry.state == ChunkCacheState::kUncached) {
+        need_fetch = true;
+        const uint64_t miss_num =
+            state_->cache_misses.fetch_add(1, std::memory_order_relaxed);
+        const bool is_cold =
+            ticket_cold_start ? (ticket < cold_reads) : (miss_num < cold_reads);
+        const uint64_t max_cached = state_->options.max_cached_bytes();
+        const bool over_cap =
+            max_cached > 0 &&
+            state_->cached_bytes.load(std::memory_order_relaxed) >=
+                static_cast<int64_t>(max_cached);
+        const bool over_par =
+            !wait_slot && !is_cold &&
+            (!can_take_slot ||
+             (max_par_blocks > 0 &&
+              state_->active_block_fetches >= max_par_blocks) ||
+             (host_max_par > 0 &&
+              g_active_host_block_fetches.load(std::memory_order_relaxed) >=
+                  host_max_par));
+        const uint64_t target_bytes =
+            over_cap
+                ? 0
+                : (over_par
+                       ? over_par_block_bytes
+                       : (is_cold ? state_->options.cold_start_block_bytes()
+                                  : cache_block_bytes));
+        if (target_bytes == 0) {
+          fetch_start = chunk_idx;
+          fetch_end = chunk_idx + 1;
+        } else if (!is_cold && !over_par && state_->options.align_blocks() &&
+                   !state_->chunk_to_block.empty()) {
+          const auto [b_start, b_end] =
+              state_->block_ranges[state_->chunk_to_block[chunk_idx]];
+          fetch_start = b_start;
+          fetch_end = b_end;
+          while (fetch_start < chunk_idx &&
+                 state_->chunk_cache[fetch_start].state !=
+                     ChunkCacheState::kUncached) {
+            ++fetch_start;
+          }
+          while (fetch_end > chunk_idx + 1 &&
+                 state_->chunk_cache[fetch_end - 1].state !=
+                     ChunkCacheState::kUncached) {
+            --fetch_end;
+          }
+        } else if (align_subblocks && state_->options.align_blocks() &&
+                   !state_->chunk_to_block.empty()) {
+          const auto [b_start, b_end] =
+              state_->block_ranges[state_->chunk_to_block[chunk_idx]];
+          const uint64_t b_start_off = (*state_->chunk_offsets)[b_start];
+          const uint64_t sub_idx = (c_start - b_start_off) / target_bytes;
+          const uint64_t sub_start_off = b_start_off + sub_idx * target_bytes;
+          const uint64_t sub_end_off = sub_start_off + target_bytes;
+          fetch_start = chunk_idx;
+          while (fetch_start > b_start &&
+                 (*state_->chunk_offsets)[fetch_start - 1] >= sub_start_off) {
+            --fetch_start;
+          }
+          fetch_end = chunk_idx + 1;
+          while (fetch_end < b_end &&
+                 state_->ChunkEndOffset(fetch_end) <= sub_end_off) {
+            ++fetch_end;
+          }
+          while (fetch_start < chunk_idx &&
+                 state_->chunk_cache[fetch_start].state !=
+                     ChunkCacheState::kUncached) {
+            ++fetch_start;
+          }
+          while (fetch_end > chunk_idx + 1 &&
+                 state_->chunk_cache[fetch_end - 1].state !=
+                     ChunkCacheState::kUncached) {
+            --fetch_end;
+          }
+        } else {
+          fetch_start = chunk_idx;
+          fetch_end = chunk_idx + 1;
+          while (fetch_end < num_chunks &&
+                 state_->chunk_cache[fetch_end].state ==
+                     ChunkCacheState::kUncached &&
+                 state_->ChunkEndOffset(fetch_end) - c_start <= target_bytes) {
+            ++fetch_end;
+          }
+        }
+        if (is_cold) {
+          state_->active_cold_fetches++;
+          counted_cold_fetch = true;
+        } else if (fetch_end - fetch_start > 1 && !over_par) {
+          state_->active_block_fetches++;
+          counted_block_fetch = true;
+          if (host_max_par > 0) {
+            g_active_host_block_fetches.fetch_add(1, std::memory_order_relaxed);
+            counted_host_fetch = true;
+          }
+        }
+        for (uint64_t c = fetch_start; c < fetch_end; ++c) {
+          if (state_->chunk_cache[c].state == ChunkCacheState::kUncached ||
+              c == chunk_idx) {
+            state_->chunk_cache[c].state = ChunkCacheState::kFetching;
+          }
+        }
+        if (!state_->waiting_tickets.empty()) {
+          state_->cache_cv.SignalAll();
+        }
+      }
+    }
+
+    if (!raw_chunk.empty()) {
+      return decode_and_invoke(raw_chunk, c_start);
+    }
+
+    if (!need_fetch) {
+      // Entry was already kConsumed; perform direct single-chunk read.
+      auto reader = get_backing_reader();
+      std::unique_ptr<Reader> sub_reader = reader->NewReader(c_start);
+      if (sub_reader == nullptr || !sub_reader->ok()) {
+        return sub_reader ? sub_reader->status()
+                          : InvalidArgumentError("Could not create reader");
+      }
+      raw_chunk.resize(c_len);
+      if (!sub_reader->Read(c_len, raw_chunk.data())) {
+        return Annotate(sub_reader->status(),
+                        "Could not read chunk from underlying reader");
+      }
+      return decode_and_invoke(raw_chunk, c_start);
+    }
+
+    const uint64_t span_start_offset = (*state_->chunk_offsets)[fetch_start];
+    const uint64_t span_end_offset = state_->ChunkEndOffset(fetch_end - 1);
+    const uint64_t span_len = span_end_offset - span_start_offset;
+
+    auto reader = get_backing_reader();
+    std::unique_ptr<Reader> sub_reader = reader->NewReader(span_start_offset);
+    std::string span_buf;
+    absl::Status read_status = absl::OkStatus();
+    if (sub_reader == nullptr || !sub_reader->ok()) {
+      read_status = sub_reader
+                        ? sub_reader->status()
+                        : InvalidArgumentError("Could not create reader");
+    } else {
+      span_buf.resize(span_len);
+      if (!sub_reader->Read(span_len, span_buf.data())) {
+        read_status = Annotate(sub_reader->status(),
+                               "Could not read block from underlying reader");
+      }
+    }
+
+    if (counted_host_fetch) {
+      {
+        absl::MutexLock host_lock(g_host_block_mu);
+        g_active_host_block_fetches.fetch_sub(1, std::memory_order_relaxed);
+      }
+      GetHostBlockCv().Signal();
+    }
+
+    if (!read_status.ok()) {
+      absl::MutexLock lock(state_->cache_mu);
+      if (counted_cold_fetch) {
+        state_->active_cold_fetches--;
+      }
+      if (counted_block_fetch) {
+        state_->active_block_fetches--;
+        state_->completed_block_fetches++;
+      }
+      for (uint64_t c = fetch_start; c < fetch_end; ++c) {
+        if (state_->chunk_cache[c].state == ChunkCacheState::kFetching) {
+          state_->chunk_cache[c].state = ChunkCacheState::kUncached;
+        }
+      }
+      state_->cache_cv.SignalAll();
+      return read_status;
+    }
+
+    if (fetch_end - fetch_start == 1 && state_->record_group_size <= 1) {
+      raw_chunk = std::move(span_buf);
+      {
+        absl::MutexLock lock(state_->cache_mu);
+        if (counted_cold_fetch) {
+          state_->active_cold_fetches--;
+        }
+        if (counted_block_fetch) {
+          state_->active_block_fetches--;
+          state_->completed_block_fetches++;
+        }
+        auto& entry = state_->chunk_cache[chunk_idx];
+        entry.remaining_reads = 0;
+        entry.state = ChunkCacheState::kConsumed;
+      }
+      state_->cache_cv.SignalAll();
+      return decode_and_invoke(raw_chunk, c_start);
+    }
+
+    {
+      int64_t added_bytes = 0;
+      absl::MutexLock lock(state_->cache_mu);
+      if (counted_cold_fetch) {
+        state_->active_cold_fetches--;
+      }
+      if (counted_block_fetch) {
+        state_->active_block_fetches--;
+        state_->completed_block_fetches++;
+      }
+      for (uint64_t c = fetch_start; c < fetch_end; ++c) {
+        const uint64_t cur_start = (*state_->chunk_offsets)[c];
+        const uint64_t cur_len = state_->ChunkEndOffset(c) - cur_start;
+        const size_t rel_off =
+            static_cast<size_t>(cur_start - span_start_offset);
+        auto& entry = state_->chunk_cache[c];
+        if (c == chunk_idx) {
+          raw_chunk.assign(span_buf.data() + rel_off, cur_len);
+          if (entry.remaining_reads <= 1) {
+            entry.remaining_reads = 0;
+            entry.state = ChunkCacheState::kConsumed;
+          } else {
+            entry.data = raw_chunk;
+            entry.remaining_reads--;
+            entry.state = ChunkCacheState::kCached;
+            added_bytes += static_cast<int64_t>(cur_len);
+          }
+        } else if (entry.state == ChunkCacheState::kFetching) {
+          entry.data.assign(span_buf.data() + rel_off, cur_len);
+          entry.state = ChunkCacheState::kCached;
+          added_bytes += static_cast<int64_t>(cur_len);
+        }
+      }
+      if (added_bytes > 0) {
+        state_->cached_bytes.fetch_add(added_bytes, std::memory_order_relaxed);
+      }
+    }
+    std::string().swap(span_buf);
+    state_->cache_cv.SignalAll();
+    return decode_and_invoke(raw_chunk, c_start);
   }
 
   struct IndexPair {
@@ -689,7 +1413,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     // Regular cases.
     if (!per_chunk_indices[i].empty()) {
       uint64_t buf_size =
-          state_->ChunkEndOffset(i) - chunk_indices_per_buffer.back()[0];
+          state_->ChunkEndOffset(i) -
+          (*state_->chunk_offsets)[chunk_indices_per_buffer.back()[0]];
       if (buf_size < state_->options.readahead_buffer_size()) {
         chunk_indices_per_buffer.back().push_back(i);
       } else {

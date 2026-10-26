@@ -160,10 +160,17 @@ class _ReadInstruction:
     object.__setattr__(self, "num_records", self.end - self.start)
 
 
+_PENDING_GCS_READERS_LOCK = threading.Lock()
+_PENDING_GCS_READERS: dict[Tuple[str, str], Any] = {}
+_GCS_NUM_RECORDS_CACHE: dict[str, int] = {}
+
+
 def _get_read_instructions(
     paths: Sequence[PathLikeOrFileInstruction],
+    reader_options_string: str = "",
 ) -> Sequence[_ReadInstruction]:
   """Constructs ReadInstructions for given paths."""
+  reuse_gcs = os.environ.get("ARRAY_RECORD_REUSE_INIT_READER", "1") != "0"
 
   def get_read_instruction(path: PathLikeOrFileInstruction) -> _ReadInstruction:
     if isinstance(path, FileInstruction):
@@ -176,12 +183,44 @@ def _get_read_instructions(
       end = int(m.group(3))
     else:
       path = os.fspath(path)
-      reader = array_record_module.ArrayRecordReader(path)
       start = 0  # Using whole file.
-      end = reader.num_records()
-      reader.close()
+      if (
+          reuse_gcs
+          and path.startswith("gs://")
+          and not _get_flag_value(_GRAIN_USE_FAST_ARRAY_RECORD_READER)
+      ):
+        dedup_pending = (
+            os.environ.get("ARRAY_RECORD_DEDUP_PENDING_READER", "1") != "0"
+        )
+        with _PENDING_GCS_READERS_LOCK:
+          existing = _PENDING_GCS_READERS.get((path, reader_options_string))
+          cached_end = _GCS_NUM_RECORDS_CACHE.get(path)
+        if dedup_pending and existing is not None and cached_end is not None:
+          return _ReadInstruction(path, start, cached_end)
+        reader_opts = f"readahead_buffer_size:0,{reader_options_string}"
+        buf_sz = int(
+            os.environ.get("ARRAY_RECORD_FILE_READER_BUFFER_SIZE", "32768")
+        )
+        reader = array_record_module.ArrayRecordReader(
+            path,
+            options=reader_opts,
+            file_reader_buffer_size=buf_sz,
+        )
+        end = cached_end if cached_end is not None else reader.num_records()
+        _GCS_NUM_RECORDS_CACHE[path] = end
+        with _PENDING_GCS_READERS_LOCK:
+          old = _PENDING_GCS_READERS.get((path, reader_options_string))
+          if old is not None:
+            old.close()
+          _PENDING_GCS_READERS[(path, reader_options_string)] = reader
+      else:
+        reader = array_record_module.ArrayRecordReader(path)
+        end = reader.num_records()
+        reader.close()
     return _ReadInstruction(path, start, end)
 
+  if len(paths) == 1:
+    return [get_read_instruction(paths[0])]
   num_threads = _get_flag_value(_GRAIN_NUM_THREADS_COMPUTING_NUM_RECORDS)
   num_workers = min(len(paths), num_threads)
   return _run_in_parallel(
@@ -193,11 +232,20 @@ def _get_read_instructions(
 
 def _create_reader(filename: epath.PathLike, additional_reader_options: str):
   """Returns an ArrayRecordReader for the given filename."""
+  f_str = os.fspath(filename)
+  if f_str.startswith("gs://"):
+    with _PENDING_GCS_READERS_LOCK:
+      pending = _PENDING_GCS_READERS.pop(
+          (f_str, additional_reader_options), None
+      )
+    if pending is not None and pending.is_open():
+      return pending
   reader_options = f"readahead_buffer_size:0,{additional_reader_options}"
+  buf_sz = int(os.environ.get("ARRAY_RECORD_FILE_READER_BUFFER_SIZE", "32768"))
   return array_record_module.ArrayRecordReader(
       filename,
       options=reader_options,
-      file_reader_buffer_size=32768,
+      file_reader_buffer_size=buf_sz,
   )
 
 
@@ -286,7 +334,9 @@ class ArrayRecordDataSource:
       self._reader_options_string = ",".join(
           [f"{k}:{v}" for k, v in reader_options.items()]
       )
-    self._read_instructions = _get_read_instructions(paths)
+    self._read_instructions = _get_read_instructions(
+        paths, self._reader_options_string
+    )
     self._paths = [ri.filename for ri in self._read_instructions]
     # We open readers lazily when we need to read from them.
     self._readers: List[Any] = [None] * len(self._read_instructions)
@@ -298,6 +348,15 @@ class ArrayRecordDataSource:
         lambda x: x.num_records, self._read_instructions
     )
     self._prefix_sums = list(itertools.accumulate(records_per_instruction))
+    self._fast_getitem = (
+        os.environ.get("ARRAY_RECORD_FAST_DATA_SOURCE_GETITEM", "1") != "0"
+    )
+    self._single_read_one = None
+    self._single_start = (
+        self._read_instructions[0].start
+        if len(self._read_instructions) == 1
+        else 0
+    )
 
   def __enter__(self):
     logging.debug("__enter__ for ArrayRecordDataSource is called.")
@@ -309,6 +368,7 @@ class ArrayRecordDataSource:
       if reader:
         reader.close()
     self._readers = [None] * len(self._read_instructions)
+    self._single_read_one = None
 
   def __len__(self) -> int:
     return self._num_records
@@ -324,6 +384,8 @@ class ArrayRecordDataSource:
     record_key = record_key.__index__()
     if record_key < 0 or record_key >= self._num_records:
       raise ValueError("Record key should be in [0, num_records)")
+    if len(self._prefix_sums) == 1:
+      return 0, record_key + self._read_instructions[0].start
     reader_idx = bisect.bisect_right(self._prefix_sums, record_key)
     records_in_previous_instructions = 0
     if reader_idx > 0:
@@ -359,13 +421,26 @@ class ArrayRecordDataSource:
       reader = _create_reader(filename, self._reader_options_string)
       _check_group_size(filename, reader)
       self._readers[reader_idx] = reader
+      if (
+          self._fast_getitem
+          and len(self._prefix_sums) == 1
+          and hasattr(reader, "read_one")
+      ):
+        self._single_read_one = reader.read_one
 
   def __getitem__(self, record_key: SupportsIndex) -> bytes:
+    if self._single_read_one is not None and type(record_key) is int:  # pylint: disable=unidiomatic-typecheck
+      if 0 <= record_key < self._num_records:
+        return self._single_read_one(record_key + self._single_start)
+      raise ValueError("Record key should be in [0, num_records)")
     reader_idx, position = self._reader_idx_and_position(record_key)
     self._ensure_reader_exists(reader_idx)
-    if hasattr(self._readers[reader_idx], "read"):
-      return self._readers[reader_idx].read([position])[0]
-    return self._readers[reader_idx][position]
+    reader = self._readers[reader_idx]
+    if hasattr(reader, "read_one"):
+      return reader.read_one(position)
+    if hasattr(reader, "read"):
+      return reader.read([position])[0]
+    return reader[position]
 
   def __getitems__(
       self, record_keys: Sequence[SupportsIndex]
