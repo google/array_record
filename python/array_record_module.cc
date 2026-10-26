@@ -15,7 +15,11 @@ limitations under the License.
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
+#include <chrono>  // NOLINT(build/c++11)
+#include <mutex>   // NOLINT(build/c++11)
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -40,7 +44,93 @@ limitations under the License.
 
 namespace py = pybind11;
 
+namespace {
+
+void MaybeConfigureResolverOptions() {
+  const char* dns_env = getenv("ARRAY_RECORD_DNS_SINGLE_REQUEST_REOPEN");
+  if (dns_env == nullptr ||
+      (strcmp(dns_env, "0") != 0 && strcmp(dns_env, "false") != 0)) {
+    setenv("RES_OPTIONS", "single-request-reopen timeout:1 attempts:3", 0);
+  }
+}
+
+google::cloud::storage::Client GetGcsClient() {
+  MaybeConfigureResolverOptions();
+  const char* share_env = getenv("ARRAY_RECORD_SHARE_GCS_CLIENT");
+  const bool share_client =
+      (share_env == nullptr ||
+       (strcmp(share_env, "0") != 0 && strcmp(share_env, "false") != 0));
+  const char* emulator_env = getenv("CLOUD_STORAGE_EMULATOR_ENDPOINT");
+  if (!share_client || (emulator_env != nullptr && emulator_env[0] != '\0')) {
+    return google::cloud::storage::Client();
+  }
+  static std::vector<google::cloud::storage::Client>* shared_clients = []() {
+    size_t pool_size = 256;
+    if (const char* pool_env = getenv("ARRAY_RECORD_GCS_POOL_SIZE")) {
+      long v = strtol(pool_env, nullptr, 10);  // NOLINT
+      if (v > 0) pool_size = static_cast<size_t>(v);
+    }
+    size_t num_clients = 4;
+    if (const char* nc_env = getenv("ARRAY_RECORD_GCS_NUM_CLIENTS")) {
+      long v = strtol(nc_env, nullptr, 10);  // NOLINT
+      if (v > 0) num_clients = static_cast<size_t>(v);
+    }
+    auto* vec = new std::vector<google::cloud::storage::Client>();
+    vec->reserve(num_clients);
+    for (size_t i = 0; i < num_clients; ++i) {
+      auto opts =
+          google::cloud::Options{}
+              .set<google::cloud::storage::ConnectionPoolSizeOption>(pool_size);
+      const char* http_ver = getenv("ARRAY_RECORD_GCS_HTTP_VERSION");
+      if (http_ver == nullptr) http_ver = "1.1";
+      if (http_ver[0] != '\0') {
+        opts.set<google::cloud::storage_experimental::HttpVersionOption>(
+            std::string(http_ver));
+      }
+      long stall_s = 2;  // NOLINT
+      if (const char* stall_s_env =
+              getenv("ARRAY_RECORD_GCS_STALL_TIMEOUT_S")) {
+        stall_s = strtol(stall_s_env, nullptr, 10);  // NOLINT
+      }
+      if (stall_s > 0) {
+        opts.set<google::cloud::storage::TransferStallTimeoutOption>(
+            std::chrono::seconds(stall_s));
+        opts.set<google::cloud::storage::DownloadStallTimeoutOption>(
+            std::chrono::seconds(stall_s));
+      }
+      long stall_rate = 1048576;  // NOLINT
+      if (const char* stall_rate_env =
+              getenv("ARRAY_RECORD_GCS_STALL_MIN_RATE")) {
+        stall_rate = strtol(stall_rate_env, nullptr, 10);  // NOLINT
+      }
+      if (stall_rate > 0) {
+        opts.set<google::cloud::storage::TransferStallMinimumRateOption>(
+            static_cast<std::int32_t>(stall_rate));
+        opts.set<google::cloud::storage::DownloadStallMinimumRateOption>(
+            static_cast<std::int32_t>(stall_rate));
+      }
+      if (const char* dl_buf_env =
+              getenv("ARRAY_RECORD_GCS_DOWNLOAD_BUFFER_BYTES")) {
+        long b = strtol(dl_buf_env, nullptr, 10);  // NOLINT
+        if (b > 0) {
+          opts.set<google::cloud::storage::DownloadBufferSizeOption>(
+              static_cast<std::size_t>(b));
+        }
+      }
+      vec->emplace_back(std::move(opts));
+    }
+    return vec;
+  }();
+  static std::atomic<size_t> next_client_idx{0};
+  size_t idx = next_client_idx.fetch_add(1, std::memory_order_relaxed) %
+               shared_clients->size();
+  return (*shared_clients)[idx];
+}
+
+}  // namespace
+
 PYBIND11_MODULE(array_record_module, m) {
+  MaybeConfigureResolverOptions();
   using array_record::ArrayRecordReaderBase;
   using array_record::ArrayRecordWriterBase;
 
@@ -100,12 +190,43 @@ PYBIND11_MODULE(array_record_module, m) {
              // Release the GIL because IO is time consuming.
              py::gil_scoped_release scoped_release;
              if (absl::StartsWith(path, "gs://")) {
+               if (status_or_option->readahead_buffer_size() == 0) {
+                 if (getenv("ARRAY_RECORD_CACHE_BLOCK_BYTES") == nullptr &&
+                     options.find("cache_block_bytes") == std::string::npos) {
+                   status_or_option->set_cache_block_bytes(64ULL << 20);
+                 }
+                 if (getenv("ARRAY_RECORD_COLD_START_READS") == nullptr &&
+                     options.find("cold_start_reads") == std::string::npos) {
+                   status_or_option->set_cold_start_reads(24);
+                 }
+                 if (getenv("ARRAY_RECORD_COLD_START_BLOCK_BYTES") == nullptr &&
+                     options.find("cold_start_block_bytes") ==
+                         std::string::npos) {
+                   status_or_option->set_cold_start_block_bytes(8ULL << 20);
+                 }
+                 if (getenv("ARRAY_RECORD_MAX_PARALLEL_BLOCK_FETCHES") ==
+                         nullptr &&
+                     options.find("max_parallel_block_fetches") ==
+                         std::string::npos) {
+                   status_or_option->set_max_parallel_block_fetches(3);
+                 }
+                 if (getenv("ARRAY_RECORD_WAIT_FOR_BLOCK_SLOT") == nullptr &&
+                     options.find("wait_for_block_slot") == std::string::npos) {
+                   status_or_option->set_wait_for_block_slot(false);
+                 }
+                 if (getenv("ARRAY_RECORD_HOST_MAX_PARALLEL_BLOCK_FETCHES") ==
+                         nullptr &&
+                     options.find("host_max_parallel_block_fetches") ==
+                         std::string::npos) {
+                   status_or_option->set_host_max_parallel_block_fetches(16);
+                 }
+               }
                const auto footer_prefetch_bytes =
                    status_or_option->footer_prefetch_bytes();
                return new array_record::ArrayRecordReader(
                    riegeli::Maker<riegeli::GcsReader>(
-                       google::cloud::storage::Client(),
-                       riegeli::GcsObject(path), std::move(gcs_reader_options),
+                       GetGcsClient(), riegeli::GcsObject(path),
+                       std::move(gcs_reader_options),
                        footer_prefetch_bytes > 0
                            ? google::cloud::storage::ReadLast(
                                  footer_prefetch_bytes)
@@ -173,6 +294,25 @@ PYBIND11_MODULE(array_record_module, m) {
                throw std::runtime_error(std::string(reader.status().message()));
              }
            })
+      .def(
+          "read_one",
+          [](ArrayRecordReaderBase& reader, uint64_t record_index) {
+            std::string staging;
+            {
+              py::gil_scoped_release scoped_release;
+              uint64_t idx = record_index;
+              auto status = reader.ParallelReadRecordsWithIndices(
+                  absl::MakeConstSpan(&idx, 1),
+                  [&](uint64_t, absl::string_view record_data) -> absl::Status {
+                    staging.assign(record_data.data(), record_data.size());
+                    return absl::OkStatus();
+                  });
+              if (!status.ok()) {
+                throw std::runtime_error(std::string(status.message()));
+              }
+            }
+            return py::bytes(staging);
+          })
       // See write() for why this returns py::bytes.
       .def("read",
            [](ArrayRecordReaderBase& reader) {
@@ -188,6 +328,26 @@ PYBIND11_MODULE(array_record_module, m) {
            })
       .def("read",
            [](ArrayRecordReaderBase& reader, std::vector<uint64_t> indices) {
+             if (indices.size() == 1) {
+               std::string staging;
+               {
+                 py::gil_scoped_release scoped_release;
+                 auto status = reader.ParallelReadRecordsWithIndices(
+                     indices,
+                     [&](uint64_t,
+                         absl::string_view record_data) -> absl::Status {
+                       staging.assign(record_data.data(), record_data.size());
+                       return absl::OkStatus();
+                     });
+                 if (!status.ok()) {
+                   throw std::runtime_error(std::string(status.message()));
+                 }
+               }
+               py::list output(1);
+               auto py_record = py::bytes(staging);
+               PyList_SET_ITEM(output.ptr(), 0, py_record.release().ptr());
+               return output;
+             }
              std::vector<std::string> staging(indices.size());
              py::list output(indices.size());
              {
