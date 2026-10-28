@@ -80,7 +80,10 @@ class ArrayRecordReaderBase : public riegeli::Object {
     //     "readahead_buffer_size" ":" readahead_buffer_size |
     //     "max_parallelism" ":" max_parallelism |
     //     "index_storage_option" ":" index_storage_option |
-    //     "footer_prefetch_bytes" ":" footer_prefetch_bytes
+    //     "footer_prefetch_bytes" ":" footer_prefetch_bytes |
+    //     "block_cache_max_bytes" ":" block_cache_max_bytes |
+    //     "block_cache_block_size" ":" block_cache_block_size |
+    //     "block_cache_max_inflight" ":" block_cache_max_inflight
     //   readahead_buffer_size ::= non-negative integer expressed as real with
     //     optional suffix [BKMG]. (Example 16MB). Set to 0 optimizes random
     //     access performance. Defaults 0.
@@ -93,6 +96,19 @@ class ArrayRecordReaderBase : public riegeli::Object {
     //   footer_prefetch_bytes ::= `auto` or non-negative integer expressed as
     //     real with optional suffix [BKMG]. Defaults to 1MB. Only supported
     //     with `index_storage_option:in_memory`.
+    //   block_cache_max_bytes ::= non-negative integer with optional suffix
+    //     [BKMGTPE]. Enables the process-wide block cache for
+    //     `ParallelReadRecordsWithIndices` when > 0 (grow-only across
+    //     readers). Defaults 0 (off). Requires index_storage_option:in_memory
+    //     and block_cache_max_bytes >= block_cache_block_size. A cached block
+    //     is freed once this reader has served all of its records in a pass,
+    //     or when the reader closes; if the reader serves only part of each
+    //     block (e.g. strided sharding across processes), blocks stay until
+    //     the reader closes. See block_cache.h.
+    //   block_cache_block_size ::= integer in [1M, 1G] with optional suffix.
+    //     Target bytes per cached block of whole chunks. Defaults 16M.
+    //   block_cache_max_inflight ::= integer in [1, 1024]. Max concurrent
+    //     block fetches per process (grow-only). Defaults 16.
     // ```
     static absl::StatusOr<Options> FromString(absl::string_view text);
 
@@ -132,11 +148,40 @@ class ArrayRecordReaderBase : public riegeli::Object {
     }
     uint64_t footer_prefetch_bytes() const { return footer_prefetch_bytes_; }
 
+    // Process-wide block cache for random-access reads (see block_cache.h).
+    // Disabled when `block_cache_max_bytes` is 0.
+    static constexpr uint64_t kDefaultBlockCacheMaxBytes = 0;
+    static constexpr uint64_t kDefaultBlockCacheBlockSize = uint64_t{16} << 20;
+    static constexpr uint64_t kMinBlockCacheBlockSize = uint64_t{1} << 20;
+    static constexpr uint64_t kMaxBlockCacheBlockSize = uint64_t{1} << 30;
+    static constexpr uint32_t kDefaultBlockCacheMaxInflight = 16;
+    static constexpr uint32_t kMaxBlockCacheMaxInflight = 1024;
+    Options& set_block_cache_max_bytes(uint64_t v) {
+      block_cache_max_bytes_ = v;
+      return *this;
+    }
+    uint64_t block_cache_max_bytes() const { return block_cache_max_bytes_; }
+    Options& set_block_cache_block_size(uint64_t v) {
+      block_cache_block_size_ = v;
+      return *this;
+    }
+    uint64_t block_cache_block_size() const { return block_cache_block_size_; }
+    Options& set_block_cache_max_inflight(uint32_t v) {
+      block_cache_max_inflight_ = v;
+      return *this;
+    }
+    uint32_t block_cache_max_inflight() const {
+      return block_cache_max_inflight_;
+    }
+
    private:
     std::optional<uint32_t> max_parallelism_ = std::nullopt;
     uint64_t readahead_buffer_size_ = kDefaultReadaheadBufferSize;
     IndexStorageOption index_storage_option_ = IndexStorageOption::kInMemory;
     uint64_t footer_prefetch_bytes_ = kDefaultFooterPrefetchBytes;
+    uint64_t block_cache_max_bytes_ = kDefaultBlockCacheMaxBytes;
+    uint64_t block_cache_block_size_ = kDefaultBlockCacheBlockSize;
+    uint32_t block_cache_max_inflight_ = kDefaultBlockCacheMaxInflight;
   };
 
   // Reads the entire file in parallel and invokes the callback function of
@@ -329,6 +374,10 @@ class ArrayRecordReaderBase : public riegeli::Object {
 
   void Initialize();
 
+  // Frees this reader's block-cache entries. Idempotent. Subclasses call it
+  // from Done() after all in-flight reads have released the backing reader.
+  void ReleaseBlockCache();
+
   virtual TriStatePtr<riegeli::Reader>::SharedRef get_backing_reader()
       const = 0;
 
@@ -394,6 +443,8 @@ class ArrayRecordReader : public ArrayRecordReaderBase {
   void Done() override {
     if (main_reader_ == nullptr) return;
     auto unique = main_reader_->WaitAndMakeUnique();
+    // All reads (and block fetches) of this reader have finished.
+    ReleaseBlockCache();
     if (!unique->Close()) Fail(unique->status());
   }
 

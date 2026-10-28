@@ -19,9 +19,11 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <random>
 #include <string>
+#include <thread>  // NOLINT(build/c++11)
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -29,8 +31,11 @@ limitations under the License.
 #include "gtest/gtest.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "cpp/array_record_writer.h"
+#include "cpp/block_cache.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
 #include "cpp/test_utils.h"
@@ -785,6 +790,617 @@ TEST(ArrayRecordReaderTest, FooterEndsAtExactBlockBoundaryWithoutPadding) {
     EXPECT_EQ(record_view, expected_record);
     ASSERT_TRUE(reader.Close());
   }
+}
+
+TEST(BlockCacheOptionsTest, ParsesKeys) {
+  auto options = ArrayRecordReaderBase::Options::FromString(
+      "block_cache_max_bytes:32G,block_cache_block_size:64M,"
+      "block_cache_max_inflight:24");
+  ASSERT_TRUE(options.ok()) << options.status();
+  EXPECT_EQ(options->block_cache_max_bytes(), uint64_t{32} << 30);
+  EXPECT_EQ(options->block_cache_block_size(), uint64_t{64} << 20);
+  EXPECT_EQ(options->block_cache_max_inflight(), 24u);
+}
+
+TEST(BlockCacheOptionsTest, DefaultsAreOff) {
+  auto options = ArrayRecordReaderBase::Options::FromString("");
+  ASSERT_TRUE(options.ok());
+  EXPECT_EQ(options->block_cache_max_bytes(), 0u);
+  EXPECT_EQ(options->block_cache_block_size(), uint64_t{16} << 20);
+  EXPECT_EQ(options->block_cache_max_inflight(), 16u);
+}
+
+TEST(BlockCacheOptionsTest, RejectsInvalidCombinations) {
+  for (absl::string_view text : {
+           "block_cache_max_bytes:1M,block_cache_block_size:16M",
+           "block_cache_max_bytes:32M,index_storage_option:offloaded,"
+           "footer_prefetch_bytes:0",
+           "block_cache_max_bytes:32M,block_cache_block_size:512K",
+           "block_cache_max_bytes:32M,block_cache_block_size:2G",
+           "block_cache_max_bytes:32M,block_cache_max_inflight:0",
+           "block_cache_max_bytes:32M,block_cache_max_inflight:2k",
+       }) {
+    EXPECT_FALSE(ArrayRecordReaderBase::Options::FromString(text).ok()) << text;
+  }
+}
+
+TEST(BlockCacheOptionsTest, InitializeRejectsInvalidSetterConfig) {
+  std::string encoded;
+  {
+    auto writer =
+        ArrayRecordWriter(riegeli::Maker<riegeli::StringWriter>(&encoded),
+                          ArrayRecordWriterBase::Options(), nullptr);
+    ASSERT_TRUE(writer.WriteRecord("a"));
+    ASSERT_TRUE(writer.Close());
+  }
+  ArrayRecordReaderBase::Options options;
+  options.set_block_cache_max_bytes(1 << 20);
+  options.set_block_cache_block_size(16 << 20);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           options, nullptr);
+  EXPECT_FALSE(reader.ok());
+  EXPECT_EQ(reader.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+// ---------------------------------------------------------------------------
+// Block cache.
+
+constexpr uint64_t kMiB = uint64_t{1} << 20;
+
+// Writes uncompressed records of 1-3 KiB (so chunks straddle 64 KiB Riegeli
+// block boundaries). `big_record_at`, if set, makes that record 3 MiB.
+std::string WriteBlockCacheTestFile(
+    uint32_t num_records, uint32_t group_size,
+    std::vector<std::string>* records,
+    std::optional<uint32_t> big_record_at = std::nullopt) {
+  std::string encoded;
+  auto writer_options = ArrayRecordWriterBase::Options();
+  writer_options.set_uncompressed().set_group_size(group_size);
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::mt19937 rng(42);
+  std::uniform_int_distribution<int> size_dist(1024, 3071);
+  records->clear();
+  for (uint32_t i = 0; i < num_records; ++i) {
+    std::string r = absl::StrCat("record-", i, "-");
+    size_t size = (big_record_at == i) ? 3 * kMiB : size_dist(rng);
+    r.resize(size, static_cast<char>('a' + i % 26));
+    records->push_back(r);
+    EXPECT_TRUE(writer.WriteRecord(r));
+  }
+  EXPECT_TRUE(writer.Close());
+  return encoded;
+}
+
+ArrayRecordReaderBase::Options BlockCacheOptions(uint64_t max_bytes,
+                                                 uint64_t block_size) {
+  ArrayRecordReaderBase::Options options;
+  options.set_block_cache_max_bytes(max_bytes).set_block_cache_block_size(
+      block_size);
+  return options;
+}
+
+std::vector<uint64_t> Permutation(uint64_t n, uint32_t seed) {
+  std::vector<uint64_t> order(n);
+  std::iota(order.begin(), order.end(), 0);
+  std::mt19937 rng(seed);
+  std::shuffle(order.begin(), order.end(), rng);
+  return order;
+}
+
+// Reads each index with its own ParallelReadRecordsWithIndices call, the way
+// Grain's ArrayRecordDataSource does, and checks the record.
+void ReadSinglyAndCheck(const ArrayRecordReaderBase& reader,
+                        absl::Span<const uint64_t> order,
+                        const std::vector<std::string>& records) {
+  for (uint64_t idx : order) {
+    uint64_t one = idx;
+    ASSERT_TRUE(reader
+                    .ParallelReadRecordsWithIndices(
+                        absl::MakeConstSpan(&one, 1),
+                        [&](uint64_t, absl::string_view record) {
+                          EXPECT_EQ(record, records[idx]) << idx;
+                          return absl::OkStatus();
+                        })
+                    .ok());
+  }
+}
+
+// Number of blocks the reader packs, using the rule in the spec: add the next
+// chunk only while the block span stays <= block_size.
+uint64_t ExpectedNumBlocks(const ArrayRecordReaderBase& reader,
+                           uint64_t num_chunks, uint64_t block_size) {
+  uint64_t blocks = 1;
+  uint64_t start = reader.ChunkStartOffset(0);
+  for (uint64_t c = 1; c < num_chunks; ++c) {
+    if (reader.ChunkEndOffset(c) - start > block_size) {
+      ++blocks;
+      start = reader.ChunkStartOffset(c);
+    }
+  }
+  return blocks;
+}
+
+class BlockCacheReaderTest : public testing::TestWithParam<uint32_t> {
+ protected:
+  void SetUp() override { BlockCache::ResetGlobalForTesting(); }
+  void TearDown() override { BlockCache::ResetGlobalForTesting(); }
+  uint32_t group_size() const { return GetParam(); }
+};
+
+TEST_P(BlockCacheReaderTest, MatchesUncachedReadsSingleAndBatch) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, group_size(), &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(64 * kMiB, kMiB),
+                           ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  ReadSinglyAndCheck(reader, Permutation(records.size(), 1), records);
+
+  // Batches with duplicates, spread over many blocks.
+  std::mt19937 rng(7);
+  std::uniform_int_distribution<uint64_t> dist(0, records.size() - 1);
+  for (int batch = 0; batch < 20; ++batch) {
+    std::vector<uint64_t> indices;
+    for (int i = 0; i < 64; ++i) indices.push_back(dist(rng));
+    indices.push_back(indices.front());  // duplicate
+    ASSERT_TRUE(reader
+                    .ParallelReadRecordsWithIndices(
+                        indices,
+                        [&](uint64_t i, absl::string_view record) {
+                          EXPECT_EQ(record, records[indices[i]]);
+                          return absl::OkStatus();
+                        })
+                    .ok());
+  }
+  ASSERT_TRUE(reader.Close());
+}
+
+INSTANTIATE_TEST_SUITE_P(GroupSizes, BlockCacheReaderTest,
+                         testing::Values(1u, 3u));
+
+class BlockCacheReaderSingleTest : public testing::Test {
+ protected:
+  void SetUp() override { BlockCache::ResetGlobalForTesting(); }
+  void TearDown() override { BlockCache::ResetGlobalForTesting(); }
+};
+
+TEST_F(BlockCacheReaderSingleTest, FetchesEachBlockOnceAndDrains) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(64 * kMiB, kMiB),
+                           /*pool=*/nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  const uint64_t blocks = ExpectedNumBlocks(reader, records.size(), kMiB);
+  ASSERT_GT(blocks, 4u);
+  ReadSinglyAndCheck(reader, Permutation(records.size(), 2), records);
+  BlockCache::Stats s = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(s.misses_fetched, blocks);
+  EXPECT_EQ(s.hits, records.size() - blocks);
+  EXPECT_EQ(s.drained_frees, blocks);
+  EXPECT_EQ(s.resident_bytes, 0u);
+  EXPECT_EQ(s.fallbacks_inflight + s.fallbacks_budget + s.fallbacks_error, 0u);
+}
+
+TEST_F(BlockCacheReaderSingleTest, SmallBudgetStaysCorrectAndBounded) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(2 * kMiB, kMiB),
+                           ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.ok());
+  std::vector<std::thread> threads;
+  for (uint32_t t = 0; t < 4; ++t) {
+    threads.emplace_back([&, t] {
+      auto order = Permutation(records.size(), 10 + t);
+      order.resize(1000);
+      ReadSinglyAndCheck(reader, order, records);
+    });
+  }
+  for (auto& th : threads) th.join();
+  // The budget fills up: later misses fall back to direct reads.
+  BlockCache::Stats s = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_GT(s.fallbacks_budget, 0u);
+  EXPECT_LE(s.peak_resident_bytes, 2 * kMiB);
+}
+
+TEST_F(BlockCacheReaderSingleTest, BudgetEqualToBlockSizeUnderConcurrency) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(kMiB, kMiB),
+                           ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.ok());
+  std::vector<std::thread> threads;
+  for (uint32_t t = 0; t < 8; ++t) {
+    threads.emplace_back([&, t] {
+      auto order = Permutation(records.size(), 20 + t);
+      order.resize(500);
+      ReadSinglyAndCheck(reader, order, records);
+    });
+  }
+  for (auto& th : threads) th.join();
+  BlockCache::Stats s = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_LE(s.peak_resident_bytes, kMiB);
+  EXPECT_EQ(s.pending_bytes, 0u);
+}
+
+TEST_F(BlockCacheReaderSingleTest, SecondEpochIsCorrectAndBounded) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(2000, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(2 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(reader.ok());
+  ReadSinglyAndCheck(reader, Permutation(records.size(), 3), records);
+  // ~4 MiB of records, a 2 MiB budget and 1 MiB blocks: in epoch 1 some
+  // misses fall back to direct reads, and blocks whose records are all served
+  // are freed.
+  BlockCache::Stats epoch1 = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_GT(epoch1.fallbacks_budget, 0u);
+  EXPECT_GT(epoch1.drained_frees, 0u);
+  // Each epoch completes one pass over every block, so nothing stays resident.
+  EXPECT_EQ(epoch1.resident_bytes, 0u);
+  ReadSinglyAndCheck(reader, Permutation(records.size(), 4), records);
+  BlockCache::Stats epoch2 = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_LE(epoch2.peak_resident_bytes, 2 * kMiB);
+  EXPECT_GT(epoch2.drained_frees, epoch1.drained_frees);
+  EXPECT_EQ(epoch2.resident_bytes, 0u);
+}
+
+TEST_F(BlockCacheReaderSingleTest, EveryFullPassDrainsEachBlockAgain) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(64 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  const uint64_t blocks = ExpectedNumBlocks(reader, records.size(), kMiB);
+  ASSERT_GT(blocks, 4u);
+  ReadSinglyAndCheck(reader, Permutation(records.size(), 11), records);
+  BlockCache::Stats epoch1 = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(epoch1.drained_frees, blocks);
+  EXPECT_EQ(epoch1.resident_bytes, 0u);
+  // The drain counters re-arm, so the second pass frees every block again.
+  ReadSinglyAndCheck(reader, Permutation(records.size(), 12), records);
+  BlockCache::Stats epoch2 = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(epoch2.misses_fetched, 2 * blocks);
+  EXPECT_EQ(epoch2.drained_frees, 2 * blocks);
+  EXPECT_EQ(epoch2.resident_bytes, 0u);
+  EXPECT_EQ(epoch2.fallbacks_budget, 0u);
+}
+
+TEST_F(BlockCacheReaderSingleTest, OutOfRangeIndexStillFails) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(100, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(16 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(reader.ok());
+  uint64_t bad = records.size();
+  absl::Status s = reader.ParallelReadRecordsWithIndices(
+      absl::MakeConstSpan(&bad, 1),
+      [](uint64_t, absl::string_view) { return absl::OkStatus(); });
+  EXPECT_EQ(s.code(), absl::StatusCode::kOutOfRange);
+}
+
+TEST_F(BlockCacheReaderSingleTest, OversizedChunkFallsBackWithoutEvicting) {
+  std::vector<std::string> records;
+  std::string encoded =
+      WriteBlockCacheTestFile(1000, 1, &records, /*big_record_at=*/500);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(2 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(reader.ok());
+  ReadSinglyAndCheck(reader, std::vector<uint64_t>{0, 1, 2}, records);
+  BlockCache::Stats before = BlockCache::InstanceIfExists()->GetStats();
+  ReadSinglyAndCheck(reader, std::vector<uint64_t>{500}, records);
+  BlockCache::Stats after = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(after.fallbacks_budget, before.fallbacks_budget + 1);
+  EXPECT_EQ(after.drained_frees, before.drained_frees);
+  EXPECT_EQ(after.closed_frees, before.closed_frees);
+  EXPECT_EQ(after.resident_bytes, before.resident_bytes);
+}
+
+TEST_F(BlockCacheReaderSingleTest, UncachedReaderInSameProcessIsUnaffected) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(1000, 1, &records);
+  ArrayRecordReader cached(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(16 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(cached.ok());
+  ReadSinglyAndCheck(cached, std::vector<uint64_t>{0, 999}, records);
+  BlockCache::Stats before = BlockCache::InstanceIfExists()->GetStats();
+  ArrayRecordReader uncached(riegeli::Maker<riegeli::StringReader>(encoded),
+                             ArrayRecordReaderBase::Options(), nullptr);
+  ASSERT_TRUE(uncached.ok());
+  ReadSinglyAndCheck(uncached, Permutation(records.size(), 5), records);
+  BlockCache::Stats after = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(after.hits, before.hits);
+  EXPECT_EQ(after.misses_fetched, before.misses_fetched);
+}
+
+TEST_F(BlockCacheReaderSingleTest, EmptyFileBehavesLikeUncached) {
+  std::string encoded;
+  {
+    auto writer =
+        ArrayRecordWriter(riegeli::Maker<riegeli::StringWriter>(&encoded),
+                          ArrayRecordWriterBase::Options(), nullptr);
+    ASSERT_TRUE(writer.Close());
+  }
+  ArrayRecordReader uncached(riegeli::Maker<riegeli::StringReader>(encoded),
+                             ArrayRecordReaderBase::Options(), nullptr);
+  ArrayRecordReader cached(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(16 * kMiB, kMiB), nullptr);
+  EXPECT_EQ(cached.ok(), uncached.ok());
+  if (cached.ok()) {
+    EXPECT_EQ(cached.NumRecords(), 0u);
+    EXPECT_TRUE(cached
+                    .ParallelReadRecordsWithIndices(
+                        {}, [](uint64_t,
+                               absl::string_view) { return absl::OkStatus(); })
+                    .ok());
+  }
+}
+
+TEST_F(BlockCacheReaderSingleTest, OneChunkFile) {
+  std::vector<std::string> records;
+  // group_size > num_records: all 10 records land in a single chunk.
+  std::string encoded =
+      WriteBlockCacheTestFile(10, /*group_size=*/16, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(16 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  ReadSinglyAndCheck(reader, Permutation(records.size(), 8), records);
+  BlockCache::Stats s = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(s.misses_fetched, 1u);
+  EXPECT_EQ(s.hits, records.size() - 1);
+  EXPECT_EQ(s.drained_frees, 1u);
+  EXPECT_EQ(s.resident_bytes, 0u);
+}
+
+TEST_F(BlockCacheReaderSingleTest, CountingReaderSeesOneNewReaderPerBlock) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  int pull_count = 0;
+  int new_reader_count = 0;
+  // tail_prefetch_size == size: the reader starts at 0, and Initialize()
+  // reads the footer without NewReader() (see
+  // FooterPrefetchSeeksAndReadsWithoutNewReaderWhenStartingAtZero).
+  ArrayRecordReader reader(
+      riegeli::Maker<TailPrefetchTestReader>(encoded, encoded.size(),
+                                             &pull_count, &new_reader_count),
+      BlockCacheOptions(64 * kMiB, kMiB), /*pool=*/nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  const uint64_t blocks = ExpectedNumBlocks(reader, records.size(), kMiB);
+  const int new_readers_before = new_reader_count;
+  ReadSinglyAndCheck(reader, Permutation(records.size(), 9), records);
+  // No pressure: each block is fetched with exactly one NewReader().
+  EXPECT_EQ(static_cast<uint64_t>(new_reader_count - new_readers_before),
+            blocks);
+  EXPECT_EQ(BlockCache::InstanceIfExists()->GetStats().misses_fetched, blocks);
+  ASSERT_TRUE(reader.Close());
+}
+
+// Serves the footer from the full data (so Initialize() succeeds), but every
+// NewReader() reads a truncated copy, as if the object shrank: block fetches
+// short-read, and so does the direct-read fallback.
+class TruncatedNewReaderTestReader : public TailPrefetchTestReader {
+ public:
+  TruncatedNewReaderTestReader(absl::string_view data, size_t keep_bytes)
+      : TailPrefetchTestReader(data, data.size(), /*pull_count=*/nullptr,
+                               /*new_reader_count=*/nullptr),
+        truncated_(data.substr(0, keep_bytes)) {}
+
+ protected:
+  std::unique_ptr<riegeli::Reader> NewReaderImpl(
+      riegeli::Position initial_pos) override {
+    auto reader = std::make_unique<riegeli::StringReader<>>(truncated_);
+    reader->Seek(initial_pos);  // Past the end: stays ok() at EOF.
+    return reader;
+  }
+
+ private:
+  std::string truncated_;
+};
+
+TEST_F(BlockCacheReaderSingleTest, ShortReadFallsBackWithUncachedError) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  const size_t keep_bytes = encoded.size() / 2;
+  uint64_t last = records.size() - 1;  // In the truncated half.
+  auto read_last = [&](const ArrayRecordReaderBase& reader) {
+    return reader.ParallelReadRecordsWithIndices(
+        absl::MakeConstSpan(&last, 1),
+        [](uint64_t, absl::string_view) { return absl::OkStatus(); });
+  };
+
+  ArrayRecordReader uncached(
+      riegeli::Maker<TruncatedNewReaderTestReader>(encoded, keep_bytes),
+      ArrayRecordReaderBase::Options(), nullptr);
+  ASSERT_TRUE(uncached.ok()) << uncached.status();
+  const absl::Status uncached_status = read_last(uncached);
+  ASSERT_FALSE(uncached_status.ok());
+
+  ArrayRecordReader cached(
+      riegeli::Maker<TruncatedNewReaderTestReader>(encoded, keep_bytes),
+      BlockCacheOptions(64 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(cached.ok()) << cached.status();
+  const absl::Status cached_status = read_last(cached);
+  EXPECT_FALSE(cached_status.ok());
+  EXPECT_EQ(cached_status.code(), uncached_status.code()) << cached_status;
+  BlockCache::Stats s = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_GT(s.fallbacks_error, 0u);
+  EXPECT_EQ(s.resident_bytes, 0u);
+}
+
+uint64_t ResidentBytes() {
+  BlockCache* cache = BlockCache::InstanceIfExists();
+  return cache == nullptr ? 0 : cache->GetStats().resident_bytes;
+}
+
+uint64_t ClosedFrees() {
+  BlockCache* cache = BlockCache::InstanceIfExists();
+  return cache == nullptr ? 0 : cache->GetStats().closed_frees;
+}
+
+// Number of resident blocks: nothing is evicted, so every fetched block is
+// either resident or freed by a drain or a close. Reads the process-wide
+// stats, so it is meaningful only on a fresh cache with one live reader.
+uint64_t ResidentBlocks() {
+  BlockCache* cache = BlockCache::InstanceIfExists();
+  if (cache == nullptr) return 0;
+  BlockCache::Stats s = cache->GetStats();
+  return s.misses_fetched - s.drained_frees - s.closed_frees;
+}
+
+TEST_F(BlockCacheReaderSingleTest, CloseReleasesBlocks) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(64 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(reader.ok());
+  auto order = Permutation(records.size(), 6);
+  order.resize(200);
+  ReadSinglyAndCheck(reader, order, records);
+  ASSERT_GT(ResidentBytes(), 0u);
+  const uint64_t blocks = ResidentBlocks();
+  ASSERT_TRUE(reader.Close());
+  EXPECT_EQ(ResidentBytes(), 0u);
+  EXPECT_EQ(ClosedFrees(), blocks);
+}
+
+TEST_F(BlockCacheReaderSingleTest, DestructionReleasesBlocks) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  uint64_t blocks = 0;
+  {
+    ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                             BlockCacheOptions(64 * kMiB, kMiB), nullptr);
+    ASSERT_TRUE(reader.ok());
+    ReadSinglyAndCheck(reader, std::vector<uint64_t>{0, 3999}, records);
+    ASSERT_GT(ResidentBytes(), 0u);
+    blocks = ResidentBlocks();
+  }
+  EXPECT_EQ(ResidentBytes(), 0u);
+  EXPECT_EQ(ClosedFrees(), blocks);
+}
+
+TEST_F(BlockCacheReaderSingleTest, MoveAssignmentReleasesOldReaderBlocks) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  ArrayRecordReader a(riegeli::Maker<riegeli::StringReader>(encoded),
+                      BlockCacheOptions(64 * kMiB, kMiB), nullptr);
+  ArrayRecordReader b(riegeli::Maker<riegeli::StringReader>(encoded),
+                      BlockCacheOptions(64 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(a.ok());
+  ASSERT_TRUE(b.ok());
+  ReadSinglyAndCheck(a, std::vector<uint64_t>{0, 1}, records);
+  const uint64_t a_bytes = ResidentBytes();
+  const uint64_t a_blocks = ResidentBlocks();
+  // A mid-file index: its block holds many records, so one read does not
+  // drain it (the last block may hold only the last record).
+  ReadSinglyAndCheck(b, std::vector<uint64_t>{2000}, records);
+  const uint64_t b_bytes = ResidentBytes() - a_bytes;
+  ASSERT_GT(a_bytes, 0u);
+  ASSERT_GT(b_bytes, 0u);
+  a = std::move(b);  // Old `a` state is destroyed.
+  EXPECT_EQ(ResidentBytes(), b_bytes);
+  EXPECT_EQ(ClosedFrees(), a_blocks);
+  ReadSinglyAndCheck(a, std::vector<uint64_t>{2001}, records);
+}
+
+TEST_F(BlockCacheReaderSingleTest, TwoReadersOfSameFileAreIndependent) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  ArrayRecordReader r1(riegeli::Maker<riegeli::StringReader>(encoded),
+                       BlockCacheOptions(64 * kMiB, kMiB), nullptr);
+  ArrayRecordReader r2(riegeli::Maker<riegeli::StringReader>(encoded),
+                       BlockCacheOptions(64 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(r1.ok());
+  ASSERT_TRUE(r2.ok());
+  ReadSinglyAndCheck(r1, std::vector<uint64_t>{0}, records);
+  const uint64_t r1_bytes = ResidentBytes();
+  ReadSinglyAndCheck(r2, std::vector<uint64_t>{0}, records);
+  // Separate reader ids: the same block is cached once per reader.
+  EXPECT_EQ(ResidentBytes(), 2 * r1_bytes);
+  ASSERT_TRUE(r1.Close());
+  EXPECT_EQ(ResidentBytes(), r1_bytes);  // r2's block survives
+  EXPECT_EQ(ClosedFrees(), 1u);
+  ReadSinglyAndCheck(r2, std::vector<uint64_t>{1}, records);
+}
+
+// Reads `indices` with one ParallelReadRecordsWithIndices call and checks the
+// records.
+void ReadBatchAndCheck(const ArrayRecordReaderBase& reader,
+                       const std::vector<uint64_t>& indices,
+                       const std::vector<std::string>& records) {
+  ASSERT_TRUE(reader
+                  .ParallelReadRecordsWithIndices(
+                      indices,
+                      [&](uint64_t i, absl::string_view record) {
+                        EXPECT_EQ(record, records[indices[i]]) << indices[i];
+                        return absl::OkStatus();
+                      })
+                  .ok());
+}
+
+TEST_F(BlockCacheReaderSingleTest, BatchWithDuplicatesFetchesBlockOnce) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(10, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(16 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  ASSERT_EQ(ExpectedNumBlocks(reader, records.size(), kMiB), 1u);
+  // Every record of the only block, plus a duplicate of record 0.
+  ReadBatchAndCheck(reader, {0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, records);
+  BlockCache::Stats s = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(s.misses_fetched, 1u);
+  EXPECT_EQ(s.drained_frees, 1u);
+  EXPECT_EQ(s.resident_bytes, 0u);
+}
+
+TEST_F(BlockCacheReaderSingleTest, BatchAcrossPassBoundaryKeepsBlock) {
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(10, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(16 * kMiB, kMiB),
+                           ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  ASSERT_EQ(ExpectedNumBlocks(reader, records.size(), kMiB), 1u);
+  ReadSinglyAndCheck(reader, std::vector<uint64_t>{0, 1}, records);
+  // Ends pass 1 and starts pass 2 in one call: the block stays for pass 2.
+  ReadBatchAndCheck(reader, {2, 3, 4, 5, 6, 7, 8, 9, 0, 1}, records);
+  BlockCache::Stats mid = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(mid.misses_fetched, 1u);
+  EXPECT_EQ(mid.drained_frees, 0u);
+  EXPECT_GT(mid.resident_bytes, 0u);
+  // The rest of pass 2 hits the block and frees it at the end.
+  ReadSinglyAndCheck(reader, std::vector<uint64_t>{2, 3, 4, 5, 6, 7, 8, 9},
+                     records);
+  BlockCache::Stats end = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(end.misses_fetched, 1u);
+  EXPECT_EQ(end.drained_frees, 1u);
+  EXPECT_EQ(end.resident_bytes, 0u);
+}
+
+TEST_F(BlockCacheReaderSingleTest, StridedPassDoesNotDrainUntilRestIsRead) {
+  // A reader that serves every second record (as with strided sharding across
+  // processes) does not finish a pass over any block, so nothing is freed
+  // until the other records are read too.
+  std::vector<std::string> records;
+  std::string encoded = WriteBlockCacheTestFile(4000, 1, &records);
+  ArrayRecordReader reader(riegeli::Maker<riegeli::StringReader>(encoded),
+                           BlockCacheOptions(64 * kMiB, kMiB), nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  std::vector<uint64_t> even, odd;
+  for (uint64_t i = 0; i < records.size(); ++i) {
+    (i % 2 == 0 ? even : odd).push_back(i);
+  }
+  ReadSinglyAndCheck(reader, even, records);
+  BlockCache::Stats half = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(half.drained_frees, 0u);
+  EXPECT_GT(half.resident_bytes, 0u);
+  ReadSinglyAndCheck(reader, odd, records);
+  BlockCache::Stats full = BlockCache::InstanceIfExists()->GetStats();
+  EXPECT_EQ(full.drained_frees, full.misses_fetched);
+  EXPECT_EQ(full.resident_bytes, 0u);
 }
 
 }  // namespace

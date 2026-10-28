@@ -19,6 +19,7 @@ limitations under the License.
 #include <string>
 
 #include "gtest/gtest.h"
+#include "absl/status/status.h"
 #include "cpp/tri_state_ptr.h"
 #include "riegeli/base/maker.h"
 #include "riegeli/bytes/reader.h"
@@ -79,8 +80,7 @@ TEST(MaskedReaderTest, SanityTest) {
 
 TEST(MaskedReaderTest, SharedRefAndNullptrTest) {
   std::string data = "0123456789abcdef";
-  TriStatePtr<riegeli::Reader> main_reader(
-      riegeli::Maker<StringReader>(data));
+  TriStatePtr<riegeli::Reader> main_reader(riegeli::Maker<StringReader>(data));
   auto shared_reader = main_reader.MakeShared();
   ASSERT_TRUE(shared_reader->Seek(4));
 
@@ -94,6 +94,49 @@ TEST(MaskedReaderTest, SharedRefAndNullptrTest) {
 
   MaskedReader null_reader(std::unique_ptr<riegeli::Reader>(nullptr), 6);
   EXPECT_FALSE(null_reader.ok());
+}
+
+TEST(MaskedReaderTest, BlockConstructorKeepsFileCoordinates) {
+  auto block = std::make_shared<const std::string>("0123456789");
+  MaskedReader reader(block, /*block_start=*/1000);
+  ASSERT_TRUE(reader.ok());
+  EXPECT_EQ(reader.pos(), 1000);
+  EXPECT_EQ(reader.Size(), 1010);
+
+  ASSERT_TRUE(reader.Seek(1004));
+  std::string result;
+  ASSERT_TRUE(reader.Read(3, result));
+  EXPECT_EQ(result, "456");
+  EXPECT_EQ(reader.pos(), 1007);
+
+  // Seeking before the block or past its end fails.
+  EXPECT_FALSE(reader.Seek(999));
+
+  MaskedReader reader2(block, /*block_start=*/1000);
+  EXPECT_FALSE(reader2.Seek(1011));
+
+  // NewReader shares the block and keeps file coordinates.
+  MaskedReader reader3(block, /*block_start=*/1000);
+  auto child = reader3.NewReader(1008);
+  ASSERT_NE(child, nullptr);
+  ASSERT_TRUE(child->Read(2, result));
+  EXPECT_EQ(result, "89");
+  EXPECT_EQ(reader3.NewReader(999), nullptr);
+
+  // A null block gives a failed reader instead of a null dereference.
+  MaskedReader null_block(std::shared_ptr<const std::string>(nullptr),
+                          /*block_start=*/1000);
+  EXPECT_FALSE(null_block.ok());
+  EXPECT_TRUE(absl::IsInvalidArgument(null_block.status()));
+}
+
+TEST(MaskedReaderTest, PrematureEndOfSourceFailsWithInvalidArgument) {
+  std::string data = "0123456789";  // 10 bytes.
+  auto base_reader = StringReader(data);
+  // Asks for 20 bytes: the source hits EOF while still ok().
+  MaskedReader reader(base_reader.NewReader(0), 20);
+  EXPECT_FALSE(reader.ok());
+  EXPECT_TRUE(absl::IsInvalidArgument(reader.status()));
 }
 
 }  // namespace

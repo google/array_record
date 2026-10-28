@@ -259,7 +259,19 @@ class ArrayRecordDataSource:
         number of files prefer to pass FileInstructions. This makes the
         initialization faster.
       reader_options: string of comma-separated options to be passed when
-        creating a reader.
+        creating a reader. For random access over GCS, enable the block cache,
+        e.g. {"block_cache_max_bytes": "32G", "block_cache_block_size": "16M",
+        "block_cache_max_inflight": "16"} on TPU7x hosts. A cached block is
+        freed once every record in it has been read in a pass, or when the
+        reader closes, so the cache fits pipelines where each process reads
+        whole shards (e.g. one ArrayRecordDataSource per shard under
+        InterleaveIterDataset). Size the budget to cover all open shards (open
+        shards x shard size, plus prefetched shards). The budget is per
+        process: with multiprocess prefetch, host memory is workers x budget.
+        With strided sharding across processes (`ds[i::n]`, or the default
+        `mp_prefetch` worker slicing over a MapDataset), each process reads
+        only part of each block per pass, so blocks stay until the reader
+        closes and each process fills its whole budget.
     """
     if isinstance(paths, (str, pathlib.Path, FileInstruction)):
       paths = [paths]

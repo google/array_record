@@ -16,6 +16,7 @@ limitations under the License.
 #include "cpp/array_record_reader.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <future>  // NOLINT(build/c++11)
@@ -35,6 +36,7 @@ limitations under the License.
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "cpp/block_cache.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
 #include "cpp/masked_reader.h"
@@ -153,6 +155,56 @@ class OffloadedChunkOffset : public ChunkOffset {
   uint64_t num_chunks_;
 };
 
+namespace {
+
+absl::Status ValidateBlockCacheOptions(
+    const ArrayRecordReaderBase::Options& o) {
+  using Options = ArrayRecordReaderBase::Options;
+  if (o.block_cache_max_bytes() == 0) return absl::OkStatus();
+  if (o.block_cache_block_size() < Options::kMinBlockCacheBlockSize ||
+      o.block_cache_block_size() > Options::kMaxBlockCacheBlockSize) {
+    return InvalidArgumentError(
+        "block_cache_block_size must be in [1M, 1G], got %d",
+        o.block_cache_block_size());
+  }
+  if (o.block_cache_max_inflight() < 1 ||
+      o.block_cache_max_inflight() > Options::kMaxBlockCacheMaxInflight) {
+    return InvalidArgumentError(
+        "block_cache_max_inflight must be in [1, 1024], got %d",
+        o.block_cache_max_inflight());
+  }
+  if (o.block_cache_max_bytes() < o.block_cache_block_size()) {
+    return InvalidArgumentError(
+        "block_cache_max_bytes (%d) must be >= block_cache_block_size (%d)",
+        o.block_cache_max_bytes(), o.block_cache_block_size());
+  }
+  if (o.index_storage_option() == Options::IndexStorageOption::kOffloaded) {
+    return InvalidArgumentError(
+        "block_cache_max_bytes > 0 is only supported with "
+        "index_storage_option:in_memory.");
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<BlockCache::Block> FetchBlock(Reader& src, uint64_t offset,
+                                             uint64_t length) {
+  std::unique_ptr<Reader> sub = src.NewReader(offset);
+  if (sub == nullptr) {
+    return src.ok() ? InternalError("NewReader(%d) failed", offset)
+                    : src.status();
+  }
+  auto buf = std::make_shared<std::string>();
+  if (!sub->Read(length, *buf)) {
+    return sub->ok()
+               ? absl::DataLossError(absl::StrFormat(
+                     "Short read of block at %d, length %d", offset, length))
+               : sub->status();
+  }
+  return BlockCache::Block(std::move(buf));
+}
+
+}  // namespace
+
 absl::StatusOr<ArrayRecordReaderBase::Options>
 ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
   ArrayRecordReaderBase::Options options;
@@ -188,6 +240,20 @@ ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
           ValueParser::Bytes(/*min_value=*/0,
                              /*max_value=*/1024 * 1024 * 1024,
                              &options.footer_prefetch_bytes_)));
+  // Block cache
+  options_parser.AddOption(
+      "block_cache_max_bytes",
+      ValueParser::Bytes(/*min_value=*/0,
+                         /*max_value=*/std::numeric_limits<uint64_t>::max(),
+                         &options.block_cache_max_bytes_));
+  options_parser.AddOption(
+      "block_cache_block_size",
+      ValueParser::Bytes(kMinBlockCacheBlockSize, kMaxBlockCacheBlockSize,
+                         &options.block_cache_block_size_));
+  int block_cache_max_inflight = kDefaultBlockCacheMaxInflight;
+  options_parser.AddOption("block_cache_max_inflight",
+                           ValueParser::Int(1, kMaxBlockCacheMaxInflight,
+                                            &block_cache_max_inflight));
   if (!options_parser.FromString(text)) {
     return options_parser.status();
   }
@@ -196,6 +262,11 @@ ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
     return InvalidArgumentError(
         "footer_prefetch_bytes > 0 is only supported with "
         "index_storage_option:in_memory.");
+  }
+  options.set_block_cache_max_inflight(
+      static_cast<uint32_t>(block_cache_max_inflight));
+  if (absl::Status s = ValidateBlockCacheOptions(options); !s.ok()) {
+    return s;
   }
   if (max_parallelism >= 0) {
     options.set_max_parallelism(max_parallelism);
@@ -227,6 +298,109 @@ struct ArrayRecordReaderBase::ArrayRecordReaderState {
   // Writer options for debugging purposes.
   std::optional<std::string> writer_options = std::nullopt;
 
+  // Block cache (enabled when options.block_cache_max_bytes() > 0).
+  // 0 means disabled.
+  uint64_t cache_reader_id = 0;
+  // First chunk of each block; size num_blocks + 1, last entry = num_chunks.
+  std::vector<uint64_t> block_first_chunk;
+  // Records of each block not yet served in the current pass over it. When a
+  // pass completes, the block is freed and the count re-armed.
+  std::vector<std::atomic<uint32_t>> block_remaining;
+
+  BlockCache::Config CacheConfig() const {
+    BlockCache::Config config;
+    config.max_bytes = options.block_cache_max_bytes();
+    config.max_inflight = options.block_cache_max_inflight();
+    return config;
+  }
+
+  // Packs whole chunks into blocks: the next chunk joins the current block
+  // only while the block span stays <= block_cache_block_size.
+  void InitBlockCache() {
+    BlockCache::Instance(CacheConfig());
+    cache_reader_id = BlockCache::NewReaderId();
+    const uint64_t num_chunks = chunk_offsets->size();
+    block_first_chunk.clear();
+    if (num_chunks == 0) {
+      block_first_chunk.push_back(0);
+      return;
+    }
+    const uint64_t block_size = options.block_cache_block_size();
+    uint64_t start = (*chunk_offsets)[0];
+    block_first_chunk.push_back(0);
+    for (uint64_t c = 1; c < num_chunks; ++c) {
+      if (ChunkEndOffset(c) - start > block_size) {
+        block_first_chunk.push_back(c);
+        start = (*chunk_offsets)[c];
+      }
+    }
+    block_first_chunk.push_back(num_chunks);
+    const size_t num_blocks = block_first_chunk.size() - 1;
+    block_remaining = std::vector<std::atomic<uint32_t>>(num_blocks);
+    for (size_t b = 0; b < num_blocks; ++b) {
+      block_remaining[b].store(BlockRecords(static_cast<uint32_t>(b)),
+                               std::memory_order_relaxed);
+    }
+  }
+
+  // Records of block `b`, clamped to UINT32_MAX. Both ends are clamped so a
+  // corrupt footer (num_records smaller than the chunks imply) cannot
+  // underflow end - begin.
+  uint32_t BlockRecords(uint32_t b) const {
+    const uint64_t begin =
+        std::min(block_first_chunk[b] * record_group_size, num_records);
+    const uint64_t end =
+        std::min(block_first_chunk[b + 1] * record_group_size, num_records);
+    return static_cast<uint32_t>(std::min<uint64_t>(end - begin, UINT32_MAX));
+  }
+
+  uint32_t BlockOf(uint64_t chunk) const {
+    auto it = std::upper_bound(block_first_chunk.begin(),
+                               block_first_chunk.end(), chunk);
+    return static_cast<uint32_t>(it - block_first_chunk.begin() - 1);
+  }
+  uint64_t BlockOffset(uint32_t b) const {
+    return (*chunk_offsets)[block_first_chunk[b]];
+  }
+  uint64_t BlockLen(uint32_t b) const {
+    return ChunkEndOffset(block_first_chunk[b + 1] - 1) - BlockOffset(b);
+  }
+
+  // Counts `n` served records of block `b`, modulo the block's record count.
+  // When a pass completes, the count is re-armed to the block's record count
+  // minus the overflow, so every full pass over a block frees it again.
+  // Returns true iff this call completes a pass and does not start the next
+  // one (the caller then frees the block). If the overflow already served
+  // records of the next pass, the block is kept for the rest of that pass.
+  bool ConsumeRecords(uint32_t b, uint64_t n) {
+    const uint32_t total = BlockRecords(b);
+    if (total == 0 || n == 0) return false;  // Count 0: never drained.
+    std::atomic<uint32_t>& counter = block_remaining[b];
+    // The count is always in [1, total].
+    uint32_t cur = counter.load(std::memory_order_relaxed);
+    while (true) {
+      const bool completed_pass = n >= cur;
+      const uint32_t overflow =
+          completed_pass ? static_cast<uint32_t>((n - cur) % total) : 0;
+      const uint32_t next =
+          completed_pass ? total - overflow : cur - static_cast<uint32_t>(n);
+      if (counter.compare_exchange_weak(cur, next, std::memory_order_acq_rel,
+                                        std::memory_order_relaxed)) {
+        return completed_pass && overflow == 0;
+      }
+    }
+  }
+
+  void ReleaseBlockCache() {
+    if (cache_reader_id == 0) return;
+    if (BlockCache* cache = BlockCache::InstanceIfExists()) {
+      cache->EraseReader(cache_reader_id);
+    }
+    cache_reader_id = 0;
+  }
+
+  ~ArrayRecordReaderState() { ReleaseBlockCache(); }
+
   uint64_t ChunkEndOffset(uint64_t chunk_idx) const {
     if (chunk_idx == chunk_offsets->size() - 1) {
       return footer_offset;
@@ -240,6 +414,10 @@ ArrayRecordReaderBase::ArrayRecordReaderBase(Options options,
     : state_(std::make_unique<ArrayRecordReaderState>(options, pool)) {}
 
 ArrayRecordReaderBase::~ArrayRecordReaderBase() = default;
+
+void ArrayRecordReaderBase::ReleaseBlockCache() {
+  if (state_ != nullptr) state_->ReleaseBlockCache();
+}
 
 ArrayRecordReaderBase::ArrayRecordReaderBase(
     ArrayRecordReaderBase&& other) noexcept
@@ -306,6 +484,10 @@ void ArrayRecordReaderBase::Initialize() {
     Fail(InvalidArgumentError(
         "footer_prefetch_bytes > 0 is only supported with "
         "index_storage_option:in_memory."));
+    return;
+  }
+  if (absl::Status s = ValidateBlockCacheOptions(state_->options); !s.ok()) {
+    Fail(std::move(s));
     return;
   }
   auto reader = get_backing_reader();
@@ -471,6 +653,9 @@ void ArrayRecordReaderBase::Initialize() {
         state_->chunk_group_size = state_->chunk_offsets->size();
       }
     }
+  }
+  if (state_->options.block_cache_max_bytes() > 0) {
+    state_->InitBlockCache();
   }
 }
 
@@ -663,7 +848,6 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
 
   std::vector<std::vector<IndexPair>> per_chunk_indices(
       state_->chunk_offsets->size());
-  std::vector<std::vector<uint64_t>> chunk_indices_per_buffer;
   for (auto [indices_idx, record_idx] : Enumerate(indices)) {
     if (record_idx >= state_->num_records) {
       return OutOfRangeError("index %d out of bound %d", record_idx,
@@ -676,6 +860,126 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     uint64_t local_idx = record_idx - chunk_idx * state_->record_group_size;
     per_chunk_indices[chunk_idx].emplace_back(local_idx, indices_idx);
   }
+
+  // Decodes `chunk_idx` from `src` (a MaskedReader in file coordinates that
+  // covers the chunk) and invokes the callback for its requested records.
+  auto serve_chunk = [&](MaskedReader& src,
+                         uint64_t chunk_idx) -> absl::Status {
+    AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
+    src.Seek((*state_->chunk_offsets)[chunk_idx]);
+    riegeli::DefaultChunkReader<> chunk_reader(&src);
+    Chunk chunk;
+    if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
+      return chunk_reader.status();
+    }
+    ChunkDecoder decoder;
+    if (ABSL_PREDICT_FALSE(!decoder.Decode(chunk))) {
+      return decoder.status();
+    }
+    for (const auto& index_pair : per_chunk_indices[chunk_idx]) {
+      decoder.SetIndex(index_pair.inner_record_index);
+      absl::string_view record;
+      if (ABSL_PREDICT_FALSE(!decoder.ReadRecord(record))) {
+        return decoder.status();
+      }
+      auto s = callback(index_pair.indices_index, record);
+      if (ABSL_PREDICT_FALSE(!s.ok())) {
+        return s;
+      }
+    }
+    if (ABSL_PREDICT_FALSE(!decoder.Close())) {
+      return decoder.status();
+    }
+    if (ABSL_PREDICT_FALSE(!chunk_reader.Close())) {
+      return chunk_reader.status();
+    }
+    return absl::OkStatus();
+  };
+
+  auto reader = get_backing_reader();
+
+  if (state_->cache_reader_id != 0) {
+    std::vector<uint64_t> touched_chunks;
+    for (auto i : Seq(per_chunk_indices.size())) {
+      if (!per_chunk_indices[i].empty()) touched_chunks.push_back(i);
+    }
+    // `touched_chunks` is sorted and a block is a contiguous range of chunks,
+    // so the touched chunks of one block form a run. A block's served records
+    // are counted once, when the last chunk of its run in this call has been
+    // served, so a call never frees a block that another of its chunks still
+    // needs. Duplicate indices count once: a pass serves each record once.
+    struct BlockRun {
+      uint64_t records = 0;
+      std::atomic<uint32_t> chunks_left{0};
+    };
+    std::vector<uint32_t> run_of(touched_chunks.size());
+    uint32_t num_runs = 0;
+    for (auto t : IndicesOf(touched_chunks)) {
+      if (t == 0 || state_->BlockOf(touched_chunks[t]) !=
+                        state_->BlockOf(touched_chunks[t - 1])) {
+        ++num_runs;
+      }
+      run_of[t] = num_runs - 1;
+    }
+    std::vector<BlockRun> runs(num_runs);
+    for (auto t : IndicesOf(touched_chunks)) {
+      const auto& pairs = per_chunk_indices[touched_chunks[t]];
+      uint64_t distinct = pairs.size();
+      if (distinct > 1) {
+        std::vector<uint64_t> inner;
+        inner.reserve(pairs.size());
+        for (const auto& p : pairs) inner.push_back(p.inner_record_index);
+        std::sort(inner.begin(), inner.end());
+        distinct = std::unique(inner.begin(), inner.end()) - inner.begin();
+      }
+      BlockRun& run = runs[run_of[t]];
+      run.records += distinct;
+      run.chunks_left.fetch_add(1, std::memory_order_relaxed);
+    }
+    // Configured once in Initialize(), so the read path skips MergeConfig's
+    // lock. Instance() is needed only when the global was reset after fork().
+    BlockCache* existing = BlockCache::InstanceIfExists();
+    BlockCache& cache = existing != nullptr
+                            ? *existing
+                            : BlockCache::Instance(state_->CacheConfig());
+    return ParallelForWithStatus<1>(
+        IndicesOf(touched_chunks), state_->pool, [&](size_t t) -> absl::Status {
+          const uint64_t chunk_idx = touched_chunks[t];
+          const uint32_t b = state_->BlockOf(chunk_idx);
+          const uint64_t block_offset = state_->BlockOffset(b);
+          const uint64_t block_len = state_->BlockLen(b);
+          AR_ENDO_JOB("ArrayRecordReaderBase::ParallelReadRecordsWithIndices",
+                      absl::StrCat("chunk_idx: ", chunk_idx, " block_idx: ", b,
+                                   " block_len: ", block_len));
+          const BlockCache::Key key{state_->cache_reader_id, b};
+          BlockCache::Block block = cache.GetOrFetch(
+              key, block_len, [&]() -> absl::StatusOr<BlockCache::Block> {
+                return FetchBlock(*reader, block_offset, block_len);
+              });
+          absl::Status s;
+          if (block != nullptr) {
+            MaskedReader masked(std::move(block), block_offset);
+            s = serve_chunk(masked, chunk_idx);
+          } else {
+            const uint64_t chunk_offset = (*state_->chunk_offsets)[chunk_idx];
+            MaskedReader masked(
+                reader->NewReader(chunk_offset),
+                state_->ChunkEndOffset(chunk_idx) - chunk_offset);
+            s = serve_chunk(masked, chunk_idx);
+          }
+          if (ABSL_PREDICT_FALSE(!s.ok())) return s;
+          // Counted after serving, so a block is never freed while one of
+          // its records is still being read.
+          BlockRun& run = runs[run_of[t]];
+          if (run.chunks_left.fetch_sub(1, std::memory_order_acq_rel) == 1 &&
+              state_->ConsumeRecords(b, run.records)) {
+            cache.DropIfReady(key);
+          }
+          return absl::OkStatus();
+        });
+  }
+
+  std::vector<std::vector<uint64_t>> chunk_indices_per_buffer;
   bool in_buffer = false;
   for (auto i : Seq(state_->chunk_offsets->size())) {
     // Find the first chunk containing indices
@@ -697,7 +1001,6 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
       }
     }
   }
-  auto reader = get_backing_reader();
   auto status = ParallelForWithStatus<1>(
       IndicesOf(chunk_indices_per_buffer), state_->pool,
       [&](size_t buf_idx) -> absl::Status {
@@ -716,35 +1019,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
               buf_len);
         }
         for (auto chunk_idx : buffer_chunks) {
-          AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
-          masked_reader.Seek((*state_->chunk_offsets)[chunk_idx]);
-          riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
-          Chunk chunk;
-          if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
-            return chunk_reader.status();
-          }
-          ChunkDecoder decoder;
-          if (ABSL_PREDICT_FALSE(!decoder.Decode(chunk))) {
-            return decoder.status();
-          }
-
-          for (const auto& index_pair : per_chunk_indices[chunk_idx]) {
-            decoder.SetIndex(index_pair.inner_record_index);
-            absl::string_view record;
-            if (ABSL_PREDICT_FALSE(!decoder.ReadRecord(record))) {
-              return decoder.status();
-            }
-            auto s = callback(index_pair.indices_index, record);
-            if (ABSL_PREDICT_FALSE(!s.ok())) {
-              return s;
-            }
-          }
-          if (ABSL_PREDICT_FALSE(!decoder.Close())) {
-            return decoder.status();
-          }
-          if (ABSL_PREDICT_FALSE(!chunk_reader.Close())) {
-            return chunk_reader.status();
-          }
+          auto s = serve_chunk(masked_reader, chunk_idx);
+          if (ABSL_PREDICT_FALSE(!s.ok())) return s;
         }
         return absl::OkStatus();
       });

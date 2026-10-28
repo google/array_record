@@ -27,6 +27,7 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "cpp/array_record_reader.h"
 #include "cpp/array_record_writer.h"
+#include "cpp/block_cache.h"
 #include "cpp/thread_pool.h"
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
@@ -138,9 +139,12 @@ PYBIND11_MODULE(array_record_module, m) {
              "readahead_buffer_size" ":" readahead_buffer_size |
              "max_parallelism" ":" max_parallelism |
              "index_storage_option" ":" index_storage_option |
-             "footer_prefetch_bytes" ":" footer_prefetch_bytes
+             "footer_prefetch_bytes" ":" footer_prefetch_bytes |
+             "block_cache_max_bytes" ":" block_cache_max_bytes |
+             "block_cache_block_size" ":" block_cache_block_size |
+             "block_cache_max_inflight" ":" block_cache_max_inflight
            readahead_buffer_size ::= non-negative integer expressed as real with
-             optional suffix [BkKMGTPE]. (Default 16MB). Set to 0 optimizes
+             optional suffix [BkKMGTPE]. (Default 0). Set to 0 optimizes
              random access performance.
            max_parallelism ::= `auto` or non-negative integer. Each parallel
              thread owns its readhaed buffer with the size
@@ -151,10 +155,21 @@ PYBIND11_MODULE(array_record_module, m) {
            footer_prefetch_bytes ::= `auto` or non-negative integer expressed as
              real with optional suffix [BkKMGTPE]. Defaults to 1MB. Only
              supported with `index_storage_option:in_memory`.
+           block_cache_max_bytes ::= non-negative integer expressed as real
+             with optional suffix [BkKMGTPE]. Process-wide byte budget of the
+             block cache for random access (grow-only across readers). Defaults
+             to 0 (off). When > 0, requires `index_storage_option:in_memory`
+             and block_cache_max_bytes >= block_cache_block_size.
+           block_cache_block_size ::= integer in [1M, 1G] expressed as real
+             with optional suffix [BkKMGTPE]. Target bytes per cached block of
+             whole chunks (per reader). Defaults to 16M.
+           block_cache_max_inflight ::= integer in [1, 1024]. Max concurrent
+             block fetches per process (grow-only). Defaults to 16.
 
-           The default option is optimized for sequential access. To optimize
-           the random access performance, set the options to
-           "readahead_buffer_size:0,max_parallelism:0".
+           The defaults suit random access via `read(indices)`. For random
+           access over GCS, also enable the block cache, e.g.
+           "block_cache_max_bytes:32G,block_cache_block_size:16M,
+           block_cache_max_inflight:16". Only `read(indices)` uses the cache.
            )")
       .def("ok", &ArrayRecordReaderBase::ok)
       .def("close",
@@ -279,4 +294,35 @@ PYBIND11_MODULE(array_record_module, m) {
         }
         return output;
       });
+  m.def(
+      "block_cache_stats",
+      []() {
+        array_record::BlockCache* cache =
+            array_record::BlockCache::InstanceIfExists();
+        const array_record::BlockCache::Stats s =
+            cache == nullptr ? array_record::BlockCache::Stats()
+                             : cache->GetStats();
+        py::dict d;
+        d["hits"] = s.hits;
+        d["misses_fetched"] = s.misses_fetched;
+        d["single_flight_waits"] = s.single_flight_waits;
+        d["fallbacks_inflight"] = s.fallbacks_inflight;
+        d["fallbacks_budget"] = s.fallbacks_budget;
+        d["fallbacks_error"] = s.fallbacks_error;
+        d["closed_frees"] = s.closed_frees;
+        d["drained_frees"] = s.drained_frees;
+        d["bytes_fetched"] = s.bytes_fetched;
+        d["resident_bytes"] = s.resident_bytes;
+        d["pending_bytes"] = s.pending_bytes;
+        d["peak_resident_bytes"] = s.peak_resident_bytes;
+        d["inflight"] = s.inflight;
+        d["max_bytes"] = s.max_bytes;
+        d["max_inflight"] = s.max_inflight;
+        return d;
+      },
+      "Returns process-wide ArrayRecord block cache counters (all 0 if the "
+      "cache was never enabled).");
+  m.def("reset_block_cache_for_testing",
+        &array_record::BlockCache::ResetGlobalForTesting,
+        "Destroys the process-wide block cache. Tests only.");
 }
