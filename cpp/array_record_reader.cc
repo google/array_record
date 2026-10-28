@@ -19,11 +19,11 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <future>  // NOLINT(build/c++11)
-#include <limits>
 #include <memory>
 #include <optional>
 #include <queue>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -44,6 +44,7 @@ limitations under the License.
 #include "riegeli/base/object.h"
 #include "riegeli/base/options_parser.h"
 #include "riegeli/base/status.h"
+#include "riegeli/base/types.h"
 #include "riegeli/bytes/reader.h"
 #include "riegeli/chunk_encoding/chunk.h"
 #include "riegeli/chunk_encoding/chunk_decoder.h"
@@ -73,6 +74,49 @@ using riegeli::ValueParser;
 template <class T>
 T CeilOfRatio(T x, T d) {
   return (x + d - 1) / d;
+}
+
+template <typename R, typename = void>
+struct HasBoundedNewReader : std::false_type {};
+
+template <typename R>
+struct HasBoundedNewReader<
+    R, std::void_t<decltype(std::declval<R&>().NewReader(
+           riegeli::Position{0}, riegeli::Position{0}))>> : std::true_type {};
+
+template <typename R = Reader>
+std::unique_ptr<Reader> NewSubReader(R& reader, riegeli::Position initial_pos,
+                                     riegeli::Position max_length) {
+  if constexpr (HasBoundedNewReader<R>::value) {
+    return reader.NewReader(initial_pos, max_length);
+  } else {
+    return reader.NewReader(initial_pos);
+  }
+}
+
+// After the first access to the underlying `riegeli::Reader`, the lazily
+// evaluated variables for random access are all initialized. Therefore it's
+// safe to access the reader from multiple threads later on, even though the
+// methods wasn't const.
+ChunkDecoder ReadChunk(Reader& reader, riegeli::Position pos, size_t len) {
+  ChunkDecoder decoder;
+  if (!reader.ok()) {
+    decoder.Fail(reader.status());
+    return decoder;
+  }
+  MaskedReader masked_reader(NewSubReader(reader, pos, len), len);
+  if (!masked_reader.ok()) {
+    decoder.Fail(masked_reader.status());
+    return decoder;
+  }
+  auto chunk_reader = riegeli::DefaultChunkReader<>(&masked_reader);
+  Chunk chunk;
+  if (!chunk_reader.ReadChunk(chunk)) {
+    decoder.Fail(chunk_reader.status());
+    return decoder;
+  }
+  decoder.Decode(chunk);
+  return decoder;
 }
 
 // Abstract class for different index storage options.
@@ -121,19 +165,17 @@ class ArrayChunkOffset : public ChunkOffset {
 class OffloadedChunkOffset : public ChunkOffset {
  public:
   OffloadedChunkOffset(ArrayRecordReaderBase* base_reader,
-                       uint64_t footer_offset, uint64_t num_chunks)
+                       uint64_t footer_offset, uint64_t footer_length,
+                       uint64_t num_chunks)
       : base_reader_(base_reader),
         footer_offset_(footer_offset),
+        footer_length_(footer_length),
         num_chunks_(num_chunks) {}
 
   uint64_t operator[](size_t idx) const override {
     auto backing_reader = base_reader_->get_backing_reader();
-    auto reader = backing_reader->NewReader(footer_offset_);
-    auto chunk_reader = riegeli::DefaultChunkReader<>(reader.get());
-    Chunk chunk;
-    ChunkDecoder footer_decoder;
-    chunk_reader.ReadChunk(chunk);
-    footer_decoder.Decode(chunk);
+    ChunkDecoder footer_decoder =
+        ReadChunk(*backing_reader, footer_offset_, footer_length_);
     // First item is the footer_metadata, so we want to skip.
     footer_decoder.SetIndex(idx + 1);
     ArrayRecordFooter footer;
@@ -150,6 +192,7 @@ class OffloadedChunkOffset : public ChunkOffset {
  private:
   ArrayRecordReaderBase* base_reader_;
   uint64_t footer_offset_;
+  uint64_t footer_length_;
   uint64_t num_chunks_;
 };
 
@@ -271,31 +314,6 @@ ArrayRecordReaderBase& ArrayRecordReaderBase::operator=(
   return *this;
 }
 
-// After the first access to the underlying `riegeli::Reader`, the lazily
-// evaluated variables for random access are all initialized. Therefore it's
-// safe to access the reader from multiple threads later on, even though the
-// methods wasn't const.
-ChunkDecoder ReadChunk(Reader& reader, size_t pos, size_t len) {
-  ChunkDecoder decoder;
-  if (!reader.ok()) {
-    decoder.Fail(reader.status());
-    return decoder;
-  }
-  MaskedReader masked_reader(reader.NewReader(pos), len);
-  if (!masked_reader.ok()) {
-    decoder.Fail(masked_reader.status());
-    return decoder;
-  }
-  auto chunk_reader = riegeli::DefaultChunkReader<>(&masked_reader);
-  Chunk chunk;
-  if (!chunk_reader.ReadChunk(chunk)) {
-    decoder.Fail(chunk_reader.status());
-    return decoder;
-  }
-  decoder.Decode(chunk);
-  return decoder;
-}
-
 void ArrayRecordReaderBase::Initialize() {
   if (!ok()) {
     return;
@@ -332,6 +350,7 @@ void ArrayRecordReaderBase::Initialize() {
   AR_ENDO_TASK("Reading ArrayRecord footer");
   RiegeliFooterMetadata footer_metadata;
   ChunkDecoder footer_decoder;
+  uint64_t footer_length = 0;
   {
     AR_ENDO_SCOPE("Reading postscript and footer chunk");
     if (!reader->SupportsRandomAccess()) {
@@ -385,12 +404,19 @@ void ArrayRecordReaderBase::Initialize() {
       return;
     }
     auto footer_offset = postscript.footer_offset();
+    if (footer_offset >= postscript_offset) {
+      Fail(InvalidArgumentError(
+          "Invalid postscript footer_offset %d >= postscript_offset %d",
+          footer_offset, postscript_offset));
+      return;
+    }
     state_->footer_offset = footer_offset;
+    footer_length = postscript_offset - footer_offset;
     footer_decoder =
         ReadChunk((prefetch_length > 0 && footer_offset >= prefetch_offset)
                       ? prefetched_reader
                       : *reader,
-                  footer_offset, size - kRiegeliBlockSize - footer_offset);
+                  footer_offset, footer_length);
 
     if (!footer_decoder.ReadRecord(footer_metadata)) {
       Fail(Annotate(footer_decoder.status(),
@@ -446,7 +472,7 @@ void ArrayRecordReaderBase::Initialize() {
       } break;
       case Options::IndexStorageOption::kOffloaded:
         state_->chunk_offsets = std::make_unique<OffloadedChunkOffset>(
-            this, state_->footer_offset, num_chunks);
+            this, state_->footer_offset, footer_length, num_chunks);
         break;
     }
 
@@ -511,7 +537,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start]),
+              NewSubReader(*reader, (*state_->chunk_offsets)[chunk_idx_start],
+                           buf_len),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
@@ -590,7 +617,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start]),
+              NewSubReader(*reader, (*state_->chunk_offsets)[chunk_idx_start],
+                           buf_len),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
@@ -712,7 +740,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[buffer_chunks[0]]),
+              NewSubReader(*reader, (*state_->chunk_offsets)[buffer_chunks[0]],
+                           buf_len),
               buf_len);
         }
         for (auto chunk_idx : buffer_chunks) {
@@ -892,8 +921,9 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
       MaskedReader masked_reader(riegeli::kClosed);
       {
         AR_ENDO_SCOPE("MaskedReader");
-        masked_reader =
-            MaskedReader(reader->NewReader(chunk_offsets.front()), buffer_len);
+        masked_reader = MaskedReader(
+            NewSubReader(*reader, chunk_offsets.front(), buffer_len),
+            buffer_len);
       }
       if (!masked_reader.ok()) {
         for (auto& decoder : decoders) {
