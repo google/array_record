@@ -157,10 +157,32 @@ cc_library(
 )
 
 cc_library(
+    name = "block_cache",
+    srcs = ["block_cache.cc"],
+    hdrs = ["block_cache.h"],
+    # block_cache.cc calls pthread_atfork, which older glibc (e.g.
+    # manylinux2014) provides only when linking with -pthread.
+    linkopts = select({
+        "@platforms//os:linux": ["-pthread"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        "@abseil-cpp//absl/base:core_headers",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/functional:function_ref",
+        "@abseil-cpp//absl/log",
+        "@abseil-cpp//absl/log:check",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/synchronization",
+    ],
+)
+
+cc_library(
     name = "array_record_reader",
     srcs = ["array_record_reader.cc"],
     hdrs = ["array_record_reader.h"],
     deps = [
+        ":block_cache",
         ":common",
         ":layout_cc_proto",
         ":masked_reader",
@@ -257,10 +279,24 @@ cc_test(
     deps = [
         ":masked_reader",
         ":tri_state_ptr",
+        "@abseil-cpp//absl/status",
         "@googletest//:gtest_main",
         "@riegeli//riegeli/base:initializer",
         "@riegeli//riegeli/bytes:reader",
         "@riegeli//riegeli/bytes:string_reader",
+    ],
+)
+
+cc_test(
+    name = "block_cache_test",
+    srcs = ["block_cache_test.cc"],
+    deps = [
+        ":block_cache",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/synchronization",
+        "@abseil-cpp//absl/time",
+        "@googletest//:gtest_main",
     ],
 )
 
@@ -291,6 +327,7 @@ cc_test(
     deps = [
         ":array_record_reader",
         ":array_record_writer",
+        ":block_cache",
         ":common",
         ":layout_cc_proto",
         ":test_utils",
@@ -298,6 +335,7 @@ cc_test(
         "@abseil-cpp//absl/functional:function_ref",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/types:span",
         "@googletest//:gtest_main",
         "@riegeli//riegeli/base:initializer",
         "@riegeli//riegeli/base:types",

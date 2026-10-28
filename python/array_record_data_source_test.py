@@ -159,6 +159,36 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
 
+  def test_block_cache_reader_options_match_uncached(self):
+    array_record_module.reset_block_cache_for_testing()
+    paths = [
+        self.testdata_dir / "digits.array_record-00000-of-00002",
+        self.testdata_dir / "digits.array_record-00001-of-00002",
+    ]
+    indices = [3, 0, 5, 9, 2, 1, 4, 7, 8, 6]
+    with array_record_data_source.ArrayRecordDataSource(
+        paths
+    ) as uncached, array_record_data_source.ArrayRecordDataSource(
+        paths,
+        {"block_cache_max_bytes": "16M", "block_cache_block_size": "1M"},
+    ) as cached:
+      self.assertEqual(
+          [cached[i] for i in indices], [uncached[i] for i in indices]
+      )
+      stats = array_record_module.block_cache_stats()
+      self.assertGreater(stats["misses_fetched"], 0)
+      self.assertEqual(stats["max_bytes"], 16 * 1024 * 1024)
+
+      # Options survive pickling (Grain mp_prefetch spawns workers). The
+      # bytes come from pickling a local object, so they are trusted.
+      data = pickle.dumps(cached)
+      ds = pickle.loads(data)  # pylint: disable=g-unsafe-pickle-load
+      with ds as restored:
+        self.assertEqual(restored[3], uncached[3])
+        self.assertIn(
+            "block_cache_max_bytes:16M", restored._reader_options_string
+        )
+
   def test_array_record_data_source_file_instructions(self):
     file_instruction_one = DummyFileInstruction(
         filename=os.fspath(

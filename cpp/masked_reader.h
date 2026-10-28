@@ -59,9 +59,15 @@ class MaskedReader : public riegeli::Reader {
   MaskedReader(TriStatePtr<riegeli::Reader>::SharedRef shared_src_reader,
                size_t length);
   MaskedReader(std::unique_ptr<riegeli::Reader> src_reader, size_t length);
+  // Constructs a `MaskedReader` over an already-fetched `block` whose first
+  // byte is at file position `block_start`. Positions stay in file
+  // coordinates, so `riegeli::DefaultChunkReader` can validate chunk
+  // boundaries and skip Riegeli block headers.
+  MaskedReader(std::shared_ptr<const std::string> block,
+               riegeli::Position block_start);
 
-  MaskedReader(MaskedReader &&other) noexcept;
-  MaskedReader &operator=(MaskedReader &&other) noexcept;
+  MaskedReader(MaskedReader&& other) noexcept;
+  MaskedReader& operator=(MaskedReader&& other) noexcept;
 
   bool SupportsRandomAccess() override { return true; }
   bool SupportsNewReader() override { return true; }
@@ -76,11 +82,8 @@ class MaskedReader : public riegeli::Reader {
 
  private:
   MaskedReader(riegeli::Reader* src_reader, size_t length);
-  // Private constructor that copies itself.
-  MaskedReader(std::shared_ptr<std::string> buffer,
-               riegeli::Position limit_pos);
 
-  std::shared_ptr<std::string> buffer_;
+  std::shared_ptr<const std::string> buffer_;
 };
 
 }  // namespace array_record

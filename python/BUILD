@@ -31,6 +31,7 @@ pybind_extension(
         "@abseil-cpp//absl/strings:str_format",
         "//cpp:array_record_reader",
         "//cpp:array_record_writer",
+        "//cpp:block_cache",
         "//cpp:thread_pool",
         "@riegeli//riegeli/base:initializer",
         "@riegeli//riegeli/bytes:fd_reader",

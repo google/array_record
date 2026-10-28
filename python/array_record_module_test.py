@@ -22,6 +22,7 @@ import threading
 
 from absl.testing import absltest
 
+from python import array_record_module
 from python.array_record_module import ArrayRecordReader
 from python.array_record_module import ArrayRecordWriter
 
@@ -106,6 +107,7 @@ class ArrayRecordModuleTest(absltest.TestCase):
     super(ArrayRecordModuleTest, self).setUp()
     self.test_file = os.path.join(self.create_tempdir().full_path,
                                   "test.arecord")
+    array_record_module.reset_block_cache_for_testing()
 
   def test_open_and_close(self):
     writer = ArrayRecordWriter(self.test_file)
@@ -364,6 +366,137 @@ class ArrayRecordModuleTest(absltest.TestCase):
       else:
         os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = old_endpoint
       mock_gcs.close()
+
+  def test_block_cache_stats_zero_when_disabled(self):
+    stats = array_record_module.block_cache_stats()
+    self.assertEqual(
+        set(stats),
+        {
+            "hits",
+            "misses_fetched",
+            "single_flight_waits",
+            "fallbacks_inflight",
+            "fallbacks_budget",
+            "fallbacks_error",
+            "closed_frees",
+            "drained_frees",
+            "bytes_fetched",
+            "resident_bytes",
+            "pending_bytes",
+            "peak_resident_bytes",
+            "inflight",
+            "max_bytes",
+            "max_inflight",
+        },
+    )
+    self.assertEqual(stats, dict.fromkeys(stats, 0))
+
+  def test_block_cache_bad_options_raise(self):
+    writer = ArrayRecordWriter(self.test_file)
+    writer.write(b"a")
+    writer.close()
+    with self.assertRaises(ValueError):
+      ArrayRecordReader(
+          self.test_file, "block_cache_max_bytes:1M,block_cache_block_size:16M"
+      )
+    with self.assertRaises(ValueError):
+      ArrayRecordReader(
+          self.test_file,
+          "index_storage_option:offloaded,footer_prefetch_bytes:0,"
+          "block_cache_max_bytes:32M",
+      )
+
+  def test_gcs_block_cache_one_get_per_block(self):
+    writer = ArrayRecordWriter(self.test_file, "group_size:1,uncompressed")
+    records = [f"record-{i:04d}-".encode() + (b"x" * 65536) for i in range(36)]
+    for r in records:
+      writer.write(r)
+    writer.close()
+    with open(self.test_file, "rb") as f:
+      payload = f.read()
+
+    mock_gcs = _MockGcsServer(payload)
+    old_endpoint = os.environ.get("CLOUD_STORAGE_EMULATOR_ENDPOINT")
+    os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = (
+        f"http://127.0.0.1:{mock_gcs.port}"
+    )
+    try:
+      reader = ArrayRecordReader(
+          "gs://test-bucket/shard-00000-of-00001",
+          "readahead_buffer_size:0,block_cache_max_bytes:16M,"
+          "block_cache_block_size:1M",
+          file_reader_buffer_size=32768,
+      )
+      order = [
+          7,
+          30,
+          1,
+          22,
+          15,
+          35,
+          0,
+          11,
+          28,
+          4,
+          19,
+          33,
+          2,
+          26,
+          9,
+          17,
+          31,
+          5,
+          24,
+          13,
+          34,
+          8,
+          20,
+          3,
+          29,
+          12,
+          25,
+          6,
+          18,
+          32,
+          10,
+          23,
+          14,
+          27,
+          16,
+          21,
+      ]
+      for i in order:
+        self.assertEqual(reader.read([i]), [records[i]])
+      stats = array_record_module.block_cache_stats()
+      # 1 GET to open (footer prefetch) + 1 GET per block, not 1 per record.
+      self.assertLen(mock_gcs.requests, 1 + stats["misses_fetched"])
+      self.assertLessEqual(stats["misses_fetched"], 4)
+      self.assertEqual(stats["hits"], len(records) - stats["misses_fetched"])
+      self.assertEqual(stats["drained_frees"], stats["misses_fetched"])
+      self.assertEqual(stats["resident_bytes"], 0)
+      reader.close()
+    finally:
+      if old_endpoint is None:
+        os.environ.pop("CLOUD_STORAGE_EMULATOR_ENDPOINT", None)
+      else:
+        os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = old_endpoint
+      mock_gcs.close()
+
+  def test_block_cache_close_releases_blocks(self):
+    writer = ArrayRecordWriter(self.test_file, "group_size:1,uncompressed")
+    for i in range(36):
+      writer.write(f"r{i}".encode() + b"y" * 65536)
+    writer.close()
+    reader = ArrayRecordReader(
+        self.test_file, "block_cache_max_bytes:16M,block_cache_block_size:1M"
+    )
+    reader.read([0])
+    before = array_record_module.block_cache_stats()
+    self.assertGreater(before["resident_bytes"], 0)
+    reader.close()
+    after = array_record_module.block_cache_stats()
+    self.assertEqual(after["resident_bytes"], 0)
+    self.assertGreaterEqual(after["closed_frees"], before["closed_frees"] + 1)
 
 
 if __name__ == "__main__":
