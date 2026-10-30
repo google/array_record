@@ -26,10 +26,13 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/base/thread_annotations.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
 #include "cpp/array_record_writer.h"
 #include "cpp/common.h"
 #include "cpp/layout.pb.h"
@@ -784,6 +787,379 @@ TEST(ArrayRecordReaderTest, FooterEndsAtExactBlockBoundaryWithoutPadding) {
     ASSERT_TRUE(reader.ReadRecord(&record_view));
     EXPECT_EQ(record_view, expected_record);
     ASSERT_TRUE(reader.Close());
+  }
+}
+
+// Records the ranges hinted to `NewReader()`, possibly from multiple threads.
+class HintLog {
+ public:
+  using Hint = std::pair<riegeli::Position, size_t>;
+
+  void Record(riegeli::Position pos, size_t length) {
+    absl::MutexLock lock(mutex_);
+    hints_.emplace_back(pos, length);
+  }
+
+  // Returns the ranges recorded since the previous call.
+  std::vector<Hint> Take() {
+    absl::MutexLock lock(mutex_);
+    return std::exchange(hints_, {});
+  }
+
+ private:
+  absl::Mutex mutex_;
+  std::vector<Hint> hints_ ABSL_GUARDED_BY(mutex_);
+};
+
+// Reads from a string, and records the ranges hinted to `NewReader()`.
+class LengthHintRecordingReader : public riegeli::Reader {
+ public:
+  LengthHintRecordingReader(absl::string_view data, HintLog* log,
+                            riegeli::Position initial_pos = 0)
+      : data_(data), log_(log) {
+    set_limit_pos(initial_pos);
+  }
+
+  bool SupportsRandomAccess() override { return true; }
+  bool SupportsNewReader() override { return true; }
+
+ protected:
+  bool PullSlow(size_t min_length, size_t recommended_length) override {
+    if (limit_pos() == data_.size()) return false;
+    set_buffer(data_.data() + pos(), data_.size() - pos());
+    set_limit_pos(data_.size());
+    return available() >= min_length;
+  }
+
+  bool SeekSlow(riegeli::Position new_pos) override {
+    set_buffer();
+    set_limit_pos(std::min<riegeli::Position>(new_pos, data_.size()));
+    return new_pos <= data_.size();
+  }
+
+  std::optional<riegeli::Position> SizeImpl() override { return data_.size(); }
+
+  std::unique_ptr<riegeli::Reader> NewReaderImpl(
+      riegeli::Position initial_pos) override {
+    ADD_FAILURE() << "NewReader(" << initial_pos << ") without a length hint";
+    return std::make_unique<LengthHintRecordingReader>(
+        data_, log_, std::min<riegeli::Position>(initial_pos, data_.size()));
+  }
+
+  std::unique_ptr<riegeli::Reader> NewReaderWithLengthHintImpl(
+      riegeli::Position initial_pos, riegeli::Position length_hint) override {
+    log_->Record(initial_pos, length_hint);
+    // Reading past the hinted range fails, so that a hint which is too short
+    // is detected.
+    const riegeli::Position start =
+        std::min<riegeli::Position>(initial_pos, data_.size());
+    const size_t end =
+        start + std::min<riegeli::Position>(length_hint, data_.size() - start);
+    return std::make_unique<LengthHintRecordingReader>(data_.substr(0, end),
+                                                       log_, start);
+  }
+
+ private:
+  absl::string_view data_;
+  HintLog* log_;
+};
+
+class ChunkLengthDeclarationTest : public testing::Test {
+ protected:
+  using Hint = HintLog::Hint;
+
+  void SetUp() override {
+    auto writer = ArrayRecordWriter(
+        riegeli::Maker<riegeli::StringWriter>(&encoded_),
+        ArrayRecordWriterBase::Options().set_group_size(1).set_uncompressed(),
+        nullptr);
+    for (int i = 0; i < kNumRecords; ++i) {
+      ASSERT_TRUE(writer.WriteRecord(Record(i)));
+    }
+    ASSERT_TRUE(writer.Close());
+
+    // With a group size of 1, each record is in its own chunk.
+    auto reference =
+        ArrayRecordReader(riegeli::Maker<riegeli::StringReader>(encoded_),
+                          ArrayRecordReaderBase::Options(), nullptr);
+    ASSERT_TRUE(reference.ok()) << reference.status();
+    for (int i = 0; i < kNumRecords; ++i) {
+      chunks_.emplace_back(
+          reference.ChunkStartOffset(i),
+          reference.ChunkEndOffset(i) - reference.ChunkStartOffset(i));
+    }
+    footer_offset_ = reference.ChunkEndOffset(kNumRecords - 1);
+    ASSERT_TRUE(reference.Close()) << reference.status();
+
+    riegeli::StringReader<> src(encoded_);
+    ASSERT_TRUE(src.Seek(footer_offset_)) << src.status();
+    riegeli::DefaultChunkReader<> footer_reader(&src);
+    riegeli::Chunk footer;
+    ASSERT_TRUE(footer_reader.ReadChunk(footer)) << footer_reader.status();
+    footer_chunk_ = Hint(footer_offset_, footer_reader.pos() - footer_offset_);
+  }
+
+  static std::string Record(uint64_t i) {
+    return std::string(1000, static_cast<char>('a' + i % 26));
+  }
+
+  // Each chunk group consists of a single chunk.
+  static ArrayRecordReaderBase::Options ReaderOptions() {
+    return ArrayRecordReaderBase::Options().set_readahead_buffer_size(1);
+  }
+
+  auto OpenReader(const ArrayRecordReaderBase::Options& options,
+                  ARThreadPool* pool) {
+    return ArrayRecordReader(
+        riegeli::Maker<LengthHintRecordingReader>(encoded_, &log_), options,
+        pool);
+  }
+
+  Hint Postscript() const {
+    return Hint(encoded_.size() - kBlockSize, kBlockSize);
+  }
+
+  // The range between the footer and the postscript.
+  Hint FooterBlocks() const {
+    return Hint(footer_offset_, encoded_.size() - kBlockSize - footer_offset_);
+  }
+
+  static constexpr int kNumRecords = 10;
+  static constexpr size_t kBlockSize = size_t{1} << 16;
+  std::string encoded_;
+  std::vector<Hint> chunks_;
+  riegeli::Position footer_offset_ = 0;
+  Hint footer_chunk_;
+  HintLog log_;
+};
+
+TEST_F(ChunkLengthDeclarationTest, InitializeWithoutFooterPrefetch) {
+  auto reader = OpenReader(ReaderOptions().set_footer_prefetch_bytes(0),
+                           /*pool=*/nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  // Declaring the postscript, which ends the file, bounds nothing but costs
+  // nothing either.
+  EXPECT_THAT(log_.Take(), testing::ElementsAre(Postscript(), FooterBlocks()));
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST_F(ChunkLengthDeclarationTest, InitializeWithFooterPrefetch) {
+  // The prefetched tail is read with a single read call, and the postscript
+  // and footer are then read from memory.
+  auto reader = OpenReader(ReaderOptions(), /*pool=*/nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  EXPECT_THAT(log_.Take(), testing::IsEmpty());
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST_F(ChunkLengthDeclarationTest, ParallelReadRecords) {
+  auto reader = OpenReader(ReaderOptions(), ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  log_.Take();
+  EXPECT_TRUE(
+      reader
+          .ParallelReadRecords([&](uint64_t index, absl::string_view record) {
+            EXPECT_EQ(record, Record(index));
+            return absl::OkStatus();
+          })
+          .ok());
+  EXPECT_THAT(log_.Take(), testing::UnorderedElementsAreArray(chunks_));
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST_F(ChunkLengthDeclarationTest, ParallelReadRecordsInRange) {
+  auto reader = OpenReader(ReaderOptions(), ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  log_.Take();
+  EXPECT_TRUE(reader
+                  .ParallelReadRecordsInRange(
+                      2, 5,
+                      [&](uint64_t index, absl::string_view record) {
+                        EXPECT_EQ(record, Record(index));
+                        return absl::OkStatus();
+                      })
+                  .ok());
+  EXPECT_THAT(log_.Take(), testing::UnorderedElementsAre(chunks_[2], chunks_[3],
+                                                         chunks_[4]));
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST_F(ChunkLengthDeclarationTest, ParallelReadRecordsWithIndices) {
+  auto reader = OpenReader(ReaderOptions(), ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  log_.Take();
+  const std::vector<uint64_t> indices = {7, 1};
+  EXPECT_TRUE(reader
+                  .ParallelReadRecordsWithIndices(
+                      indices,
+                      [&](uint64_t indices_index, absl::string_view record) {
+                        EXPECT_EQ(record, Record(indices[indices_index]));
+                        return absl::OkStatus();
+                      })
+                  .ok());
+  EXPECT_THAT(log_.Take(),
+              testing::UnorderedElementsAre(chunks_[1], chunks_[7]));
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST_F(ChunkLengthDeclarationTest, ReadRecordWithReadahead) {
+  auto reader = OpenReader(ReaderOptions(), ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  log_.Take();
+  for (int i = 0; i < kNumRecords; ++i) {
+    absl::string_view record;
+    ASSERT_TRUE(reader.ReadRecord(&record)) << reader.status();
+    EXPECT_EQ(record, Record(i));
+  }
+  EXPECT_THAT(log_.Take(), testing::UnorderedElementsAreArray(chunks_));
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST_F(ChunkLengthDeclarationTest, ReadRecordWithoutReadahead) {
+  auto reader = OpenReader(ReaderOptions(), /*pool=*/nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  log_.Take();
+  ASSERT_TRUE(reader.SeekRecord(5));
+  absl::string_view record;
+  ASSERT_TRUE(reader.ReadRecord(&record)) << reader.status();
+  EXPECT_EQ(record, Record(5));
+  EXPECT_THAT(log_.Take(), testing::ElementsAre(chunks_[5]));
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST_F(ChunkLengthDeclarationTest, OffloadedIndexDeclaresFooterChunk) {
+  // The footer chunk is followed by padding to the postscript.
+  ASSERT_LT(footer_chunk_.first + footer_chunk_.second,
+            encoded_.size() - kBlockSize);
+  auto reader =
+      OpenReader(ReaderOptions()
+                     .set_index_storage_option(IndexStorageOption::kOffloaded)
+                     .set_footer_prefetch_bytes(0),
+                 /*pool=*/nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  const std::vector<Hint> initialize_hints = log_.Take();
+  ASSERT_GE(initialize_hints.size(), 2u);
+  EXPECT_EQ(initialize_hints[0], Postscript());
+  EXPECT_EQ(initialize_hints[1], FooterBlocks());
+  for (size_t i = 2; i < initialize_hints.size(); ++i) {
+    EXPECT_EQ(initialize_hints[i], footer_chunk_) << "at hint " << i;
+  }
+
+  ASSERT_TRUE(reader.SeekRecord(5));
+  absl::string_view record;
+  ASSERT_TRUE(reader.ReadRecord(&record)) << reader.status();
+  EXPECT_EQ(record, Record(5));
+  // Looking up the start and the end of the chunk reads the footer twice.
+  EXPECT_THAT(log_.Take(),
+              testing::ElementsAre(footer_chunk_, footer_chunk_, chunks_[5]));
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST_F(ChunkLengthDeclarationTest,
+       InitializeWhenFooterIsNotPrefetchedDeclaresFooterBlocks) {
+  // Only the postscript block is prefetched, and the footer is read from the
+  // source.
+  auto reader =
+      OpenReader(ReaderOptions().set_footer_prefetch_bytes(kBlockSize),
+                 /*pool=*/nullptr);
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  EXPECT_THAT(log_.Take(), testing::ElementsAre(FooterBlocks()));
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST_F(ChunkLengthDeclarationTest, ChunkGroupsDeclareCombinedRanges) {
+  const size_t three_chunks_length =
+      chunks_[2].first + chunks_[2].second - chunks_[0].first;
+  auto group = [&](size_t first, size_t last) {
+    return Hint(
+        chunks_[first].first,
+        chunks_[last].first + chunks_[last].second - chunks_[first].first);
+  };
+  auto reader =
+      OpenReader(ReaderOptions().set_readahead_buffer_size(three_chunks_length),
+                 ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.ok()) << reader.status();
+  log_.Take();
+  EXPECT_TRUE(
+      reader
+          .ParallelReadRecords([&](uint64_t index, absl::string_view record) {
+            EXPECT_EQ(record, Record(index));
+            return absl::OkStatus();
+          })
+          .ok());
+  EXPECT_THAT(log_.Take(),
+              testing::UnorderedElementsAre(group(0, 2), group(3, 5),
+                                            group(6, 8), group(9, 9)));
+  EXPECT_TRUE(reader.Close()) << reader.status();
+}
+
+TEST(ChunkLengthDeclarationLargeTest, ChunksSpanningBlockBoundaries) {
+  std::string encoded;
+  const std::string large_record(100000, 'x');
+  {
+    auto writer = ArrayRecordWriter(
+        riegeli::Maker<riegeli::StringWriter>(&encoded),
+        ArrayRecordWriterBase::Options().set_group_size(1).set_uncompressed(),
+        nullptr);
+    for (int i = 0; i < 3; ++i) ASSERT_TRUE(writer.WriteRecord(large_record));
+    ASSERT_TRUE(writer.Close());
+  }
+  // Each record is in its own chunk, which is longer than a block and thus
+  // includes block headers.
+  using Hint = HintLog::Hint;
+  std::vector<Hint> chunks;
+  Hint footer_chunk;
+  {
+    auto reference =
+        ArrayRecordReader(riegeli::Maker<riegeli::StringReader>(encoded),
+                          ArrayRecordReaderBase::Options(), nullptr);
+    ASSERT_TRUE(reference.ok()) << reference.status();
+    for (int i = 0; i < 3; ++i) {
+      chunks.emplace_back(
+          reference.ChunkStartOffset(i),
+          reference.ChunkEndOffset(i) - reference.ChunkStartOffset(i));
+      EXPECT_GT(chunks.back().second, size_t{1} << 16);
+    }
+    const riegeli::Position footer_offset = reference.ChunkEndOffset(2);
+    ASSERT_TRUE(reference.Close()) << reference.status();
+
+    riegeli::StringReader<> src(encoded);
+    ASSERT_TRUE(src.Seek(footer_offset)) << src.status();
+    riegeli::DefaultChunkReader<> footer_reader(&src);
+    riegeli::Chunk footer;
+    ASSERT_TRUE(footer_reader.ReadChunk(footer)) << footer_reader.status();
+    footer_chunk = Hint(footer_offset, footer_reader.pos() - footer_offset);
+  }
+  for (const IndexStorageOption index_storage_option :
+       {IndexStorageOption::kInMemory, IndexStorageOption::kOffloaded}) {
+    HintLog log;
+    auto reader = ArrayRecordReader(
+        riegeli::Maker<LengthHintRecordingReader>(encoded, &log),
+        ArrayRecordReaderBase::Options()
+            .set_readahead_buffer_size(1)
+            .set_index_storage_option(index_storage_option)
+            .set_footer_prefetch_bytes(0),
+        /*pool=*/nullptr);
+    ASSERT_TRUE(reader.ok()) << reader.status();
+    log.Take();
+    for (uint64_t i : {1, 0, 2}) {
+      ASSERT_TRUE(reader.SeekRecord(i));
+      absl::string_view record;
+      ASSERT_TRUE(reader.ReadRecord(&record)) << reader.status();
+      EXPECT_EQ(record, large_record);
+    }
+    if (index_storage_option == IndexStorageOption::kInMemory) {
+      EXPECT_THAT(log.Take(),
+                  testing::ElementsAre(chunks[1], chunks[0], chunks[2]));
+    } else {
+      // Looking up the start and the end of a chunk reads the footer twice,
+      // except that the end of the last chunk is the footer offset.
+      EXPECT_THAT(log.Take(),
+                  testing::ElementsAre(footer_chunk, footer_chunk, chunks[1],
+                                       footer_chunk, footer_chunk, chunks[0],
+                                       footer_chunk, chunks[2]));
+    }
+    EXPECT_TRUE(reader.Close()) << reader.status();
   }
 }
 
