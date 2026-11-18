@@ -182,6 +182,31 @@ class ArrayRecordModuleTest(absltest.TestCase):
     batch_fetch = reader.read(indices)
     self.assertEqual(expected, batch_fetch)
 
+  def test_read_one(self):
+    writer = ArrayRecordWriter(self.test_file)
+    test_strs = [b"abc", b"def", b"ghi", b"kkk", b"..."]
+    for s in test_strs:
+      writer.write(s)
+    writer.close()
+    reader = ArrayRecordReader(
+        self.test_file, "readahead_buffer_size:0,max_parallelism:0"
+    )
+    for i in [3, 0, 4, 0, 2]:
+      record = reader.read_one(i)
+      self.assertIsInstance(record, bytes)
+      self.assertEqual(record, test_strs[i])
+      self.assertEqual(record, reader.read([i])[0])
+
+  def test_read_one_out_of_range(self):
+    writer = ArrayRecordWriter(self.test_file)
+    writer.write(b"abc")
+    writer.close()
+    reader = ArrayRecordReader(self.test_file)
+    with self.assertRaisesRegex(RuntimeError, "out of bound"):
+      reader.read_one(1)
+    with self.assertRaises(TypeError):
+      reader.read_one(-1)
+
   def test_read_range(self):
     writer = ArrayRecordWriter(self.test_file)
     test_strs = [b"abc", b"def", b"ghi", b"kkk", b"..."]

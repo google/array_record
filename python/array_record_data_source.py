@@ -362,10 +362,16 @@ class ArrayRecordDataSource:
 
   def __getitem__(self, record_key: SupportsIndex) -> bytes:
     reader_idx, position = self._reader_idx_and_position(record_key)
-    self._ensure_reader_exists(reader_idx)
-    if hasattr(self._readers[reader_idx], "read"):
-      return self._readers[reader_idx].read([position])[0]
-    return self._readers[reader_idx][position]
+    reader = self._readers[reader_idx]
+    if reader is None:
+      self._ensure_reader_exists(reader_idx)
+      reader = self._readers[reader_idx]
+    read_one = getattr(reader, "read_one", None)
+    if read_one is not None:
+      return read_one(position)
+    if hasattr(reader, "read"):
+      return reader.read([position])[0]
+    return reader[position]
 
   def __getitems__(
       self, record_keys: Sequence[SupportsIndex]

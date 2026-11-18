@@ -40,6 +40,33 @@ class DummyFileInstruction:
   examples_in_shard: int
 
 
+class _ReaderWithoutReadOne:
+  """Wraps an `ArrayRecordReader`, exposing `read()` but not `read_one()`."""
+
+  def __init__(self, reader):
+    self._reader = reader
+    self.read_calls = 0
+
+  def read(self, indices):
+    self.read_calls += 1
+    return self._reader.read(indices)
+
+  def close(self):
+    self._reader.close()
+
+
+class _CountingReader(_ReaderWithoutReadOne):
+  """Wraps an `ArrayRecordReader`, counting `read()` and `read_one()` calls."""
+
+  def __init__(self, reader):
+    super().__init__(reader)
+    self.read_one_calls = 0
+
+  def read_one(self, index):
+    self.read_one_calls += 1
+    return self._reader.read_one(index)
+
+
 class ArrayRecordDataSourcesTest(absltest.TestCase):
 
   def setUp(self):
@@ -123,6 +150,42 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     self.assertLen(ar, 5)
     actual_data = [ar[x] for x in indices_to_read]
     self.assertEqual(expected_data, actual_data)
+
+  def test_getitem_uses_read_one(self):
+    with array_record_data_source.ArrayRecordDataSource([
+        self.testdata_dir / "digits.array_record-00000-of-00002",
+        self.testdata_dir / "digits.array_record-00001-of-00002",
+    ]) as ar:
+      self.assertEqual(ar[7], b"7")  # Opens the reader of the second shard.
+      ar._readers[1] = _CountingReader(
+          array_record_module.ArrayRecordReader(
+              str(self.testdata_dir / "digits.array_record-00001-of-00002")
+          )
+      )
+      with mock.patch.object(
+          array_record_data_source.ArrayRecordDataSource,
+          "_ensure_reader_exists",
+      ) as mock_ensure_reader_exists:
+        self.assertEqual(ar[8], b"8")
+        # An open reader is used without checking it again.
+        mock_ensure_reader_exists.assert_not_called()
+      self.assertEqual(ar._readers[1].read_one_calls, 1)
+      self.assertEqual(ar._readers[1].read_calls, 0)
+
+  def test_getitem_falls_back_to_read_without_read_one(self):
+    with array_record_data_source.ArrayRecordDataSource([
+        self.testdata_dir / "digits.array_record-00000-of-00002",
+        self.testdata_dir / "digits.array_record-00001-of-00002",
+    ]) as ar:
+      self.assertEqual(ar[7], b"7")
+      # A reader without `read_one`, e.g. from an older extension module.
+      ar._readers[1] = _ReaderWithoutReadOne(
+          array_record_module.ArrayRecordReader(
+              str(self.testdata_dir / "digits.array_record-00001-of-00002")
+          )
+      )
+      self.assertEqual(ar[8], b"8")
+      self.assertEqual(ar._readers[1].read_calls, 1)
 
   def test_array_record_data_source_reverse_order(self):
     indices_to_read = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]

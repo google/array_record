@@ -255,6 +255,28 @@ PYBIND11_MODULE(array_record_module, m) {
              }
              return output;
            })
+      // Reads one record. Same as `read([index])[0]` without building a list
+      // or an extra staging copy.
+      .def(
+          "read_one",
+          [](ArrayRecordReaderBase& reader, uint64_t index) {
+            std::string record;
+            {
+              py::gil_scoped_release scoped_release;
+              const uint64_t indices[] = {index};
+              auto status = reader.ParallelReadRecordsWithIndices(
+                  indices,
+                  [&](uint64_t, absl::string_view record_data) -> absl::Status {
+                    record.assign(record_data.data(), record_data.size());
+                    return absl::OkStatus();
+                  });
+              if (!status.ok()) {
+                throw std::runtime_error(std::string(status.message()));
+              }
+            }
+            return py::bytes(record);
+          },
+          py::arg("index"))
       .def("read_all", [](ArrayRecordReaderBase& reader) {
         std::vector<std::string> staging(reader.NumRecords());
         py::list output(reader.NumRecords());
