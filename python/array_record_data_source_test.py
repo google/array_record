@@ -159,6 +159,19 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     self.assertEqual(expected_data, actual_data)
     self.assertTrue(all(reader is None for reader in ar._readers))
 
+  def test_array_record_data_source_offloaded_index(self):
+    indices_to_read = [3, 0, 5, 9, 2, 1, 4, 7, 8, 6]
+    expected_data = [b"3", b"0", b"5", b"9", b"2", b"1", b"4", b"7", b"8", b"6"]
+    with array_record_data_source.ArrayRecordDataSource(
+        [
+            self.testdata_dir / "digits.array_record-00000-of-00002",
+            self.testdata_dir / "digits.array_record-00001-of-00002",
+        ],
+        {"index_storage_option": "offloaded"},
+    ) as ar:
+      actual_data = [ar[x] for x in indices_to_read]
+    self.assertEqual(expected_data, actual_data)
+
   def test_array_record_data_source_file_instructions(self):
     file_instruction_one = DummyFileInstruction(
         filename=os.fspath(

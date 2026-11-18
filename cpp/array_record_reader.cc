@@ -187,16 +187,20 @@ ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
                          {"offloaded", IndexStorageOption::kOffloaded}},
                         &options.index_storage_option_));
   // Footer prefetch bytes
+  uint64_t footer_prefetch_bytes = UINT64_MAX;
   options_parser.AddOption(
       "footer_prefetch_bytes",
       ValueParser::Or(
-          ValueParser::Enum({{"auto", kDefaultFooterPrefetchBytes}},
+          ValueParser::Enum({{"auto", std::nullopt}},
                             &options.footer_prefetch_bytes_),
           ValueParser::Bytes(/*min_value=*/0,
                              /*max_value=*/1024 * 1024 * 1024,
-                             &options.footer_prefetch_bytes_)));
+                             &footer_prefetch_bytes)));
   if (!options_parser.FromString(text)) {
     return options_parser.status();
+  }
+  if (footer_prefetch_bytes != UINT64_MAX) {
+    options.set_footer_prefetch_bytes(footer_prefetch_bytes);
   }
   if (options.index_storage_option() == IndexStorageOption::kOffloaded &&
       options.footer_prefetch_bytes() > 0) {
