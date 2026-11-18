@@ -650,10 +650,9 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     return absl::OkStatus();
   }
 
-  struct IndexPair {
-    IndexPair(uint64_t inner_record_index, uint64_t indices_index)
-        : inner_record_index(inner_record_index),
-          indices_index(indices_index) {}
+  struct IndexEntry {
+    // Index of the chunk holding the record.
+    uint64_t chunk_idx;
     // Index of a record within a chunk.
     // Invariant: inner_record_index < group_size_ == num records per chunk.
     uint64_t inner_record_index;
@@ -661,40 +660,56 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     uint64_t indices_index;
   };
 
-  std::vector<std::vector<IndexPair>> per_chunk_indices(
-      state_->chunk_offsets->size());
-  std::vector<std::vector<uint64_t>> chunk_indices_per_buffer;
+  // Group the requested records by chunk without allocating per-chunk state
+  // for every chunk of the file: the cost is O(k log k) in the number of
+  // requested records, not O(number of chunks in the file).
+  std::vector<IndexEntry> entries;
+  entries.reserve(indices.size());
+  const uint64_t num_chunks = state_->chunk_offsets->size();
   for (auto [indices_idx, record_idx] : Enumerate(indices)) {
     if (record_idx >= state_->num_records) {
       return OutOfRangeError("index %d out of bound %d", record_idx,
                              state_->num_records);
     }
     uint64_t chunk_idx = record_idx / state_->record_group_size;
-    if (chunk_idx >= per_chunk_indices.size()) {
+    if (chunk_idx >= num_chunks) {
       return OutOfRangeError("chunk_idx out of bounds");
     }
     uint64_t local_idx = record_idx - chunk_idx * state_->record_group_size;
-    per_chunk_indices[chunk_idx].emplace_back(local_idx, indices_idx);
+    entries.push_back({chunk_idx, local_idx, indices_idx});
   }
-  bool in_buffer = false;
-  for (auto i : Seq(state_->chunk_offsets->size())) {
-    // Find the first chunk containing indices
-    if (!in_buffer) {
-      if (!per_chunk_indices[i].empty()) {
-        chunk_indices_per_buffer.push_back({i});
-        in_buffer = true;
-        continue;
-      }
+  if (entries.empty()) {
+    return absl::OkStatus();
+  }
+  // Stable, so that records of one chunk keep their order in `indices`.
+  std::stable_sort(entries.begin(), entries.end(),
+                   [](const IndexEntry& a, const IndexEntry& b) {
+                     return a.chunk_idx < b.chunk_idx;
+                   });
+  // Distinct chunks in increasing order. The entries of `chunks[k]` are
+  // `entries[chunk_begin[k], chunk_begin[k + 1])`.
+  std::vector<uint64_t> chunks;
+  std::vector<size_t> chunk_begin;
+  for (size_t e = 0; e < entries.size(); ++e) {
+    if (chunks.empty() || chunks.back() != entries[e].chunk_idx) {
+      chunks.push_back(entries[e].chunk_idx);
+      chunk_begin.push_back(e);
     }
-    // Regular cases.
-    if (!per_chunk_indices[i].empty()) {
-      uint64_t buf_size =
-          state_->ChunkEndOffset(i) - chunk_indices_per_buffer.back()[0];
-      if (buf_size < state_->options.readahead_buffer_size()) {
-        chunk_indices_per_buffer.back().push_back(i);
-      } else {
-        chunk_indices_per_buffer.push_back({i});
-      }
+  }
+  chunk_begin.push_back(entries.size());
+
+  // Positions in `chunks`, grouped into buffers which are read at once. Same
+  // grouping rule as before, applied to the requested chunks only.
+  std::vector<std::vector<size_t>> chunk_indices_per_buffer;
+  chunk_indices_per_buffer.push_back({0});
+  for (size_t k = 1; k < chunks.size(); ++k) {
+    const uint64_t i = chunks[k];
+    uint64_t buf_size =
+        state_->ChunkEndOffset(i) - chunks[chunk_indices_per_buffer.back()[0]];
+    if (buf_size < state_->options.readahead_buffer_size()) {
+      chunk_indices_per_buffer.back().push_back(k);
+    } else {
+      chunk_indices_per_buffer.push_back({k});
     }
   }
   auto reader = get_backing_reader();
@@ -703,8 +718,10 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
       [&](size_t buf_idx) -> absl::Status {
         auto buffer_chunks =
             absl::MakeConstSpan(chunk_indices_per_buffer[buf_idx]);
-        uint64_t buf_len = state_->ChunkEndOffset(buffer_chunks.back()) -
-                           (*state_->chunk_offsets)[buffer_chunks[0]];
+        const uint64_t first_chunk = chunks[buffer_chunks.front()];
+        const uint64_t last_chunk = chunks[buffer_chunks.back()];
+        uint64_t buf_len = state_->ChunkEndOffset(last_chunk) -
+                           (*state_->chunk_offsets)[first_chunk];
         AR_ENDO_JOB(
             "ArrayRecordReaderBase::ParallelReadRecordsWithIndices",
             absl::StrCat("buffer_idx: ", buf_idx, " buffer_len: ", buf_len));
@@ -712,10 +729,11 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[buffer_chunks[0]]),
+              reader->NewReader((*state_->chunk_offsets)[first_chunk]),
               buf_len);
         }
-        for (auto chunk_idx : buffer_chunks) {
+        for (auto k : buffer_chunks) {
+          const uint64_t chunk_idx = chunks[k];
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
           masked_reader.Seek((*state_->chunk_offsets)[chunk_idx]);
           riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
@@ -728,13 +746,14 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
             return decoder.status();
           }
 
-          for (const auto& index_pair : per_chunk_indices[chunk_idx]) {
-            decoder.SetIndex(index_pair.inner_record_index);
+          for (size_t e = chunk_begin[k]; e < chunk_begin[k + 1]; ++e) {
+            const IndexEntry& entry = entries[e];
+            decoder.SetIndex(entry.inner_record_index);
             absl::string_view record;
             if (ABSL_PREDICT_FALSE(!decoder.ReadRecord(record))) {
               return decoder.status();
             }
-            auto s = callback(index_pair.indices_index, record);
+            auto s = callback(entry.indices_index, record);
             if (ABSL_PREDICT_FALSE(!s.ok())) {
               return s;
             }

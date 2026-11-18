@@ -26,9 +26,11 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "cpp/array_record_writer.h"
 #include "cpp/common.h"
@@ -53,6 +55,10 @@ constexpr uint32_t kDatasetSize = 3210;
 
 namespace array_record {
 namespace {
+
+using ::testing::Each;
+using ::testing::ElementsAre;
+using ::testing::Eq;
 
 enum class CompressionType { kUncompressed, kBrotli, kZstd, kSnappy };
 
@@ -475,7 +481,7 @@ TEST(ArrayRecordReaderTest, OutOfBoundsChunkIdx) {
   // Reader will think record_group_size = 1.
   // So chunk_idx = record_idx / 1.
   // If we read index 4: chunk_idx = 4.
-  // But per_chunk_indices size = num_chunks = 1.
+  // But the file has only num_chunks = 1 chunk.
   // 4 >= 1, triggering OutOfRangeError!
   std::string corrupted = CorruptFooterGroupSize(encoded, 1);
 
@@ -492,6 +498,64 @@ TEST(ArrayRecordReaderTest, OutOfBoundsChunkIdx) {
 
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
+}
+
+TEST(ArrayRecordReaderTest, ReadRecordsWithUnsortedAndDuplicateIndices) {
+  constexpr uint64_t kGroupSize = 3;
+  constexpr int kNumRecords = 10;  // Chunks hold records 0-2, 3-5, 6-8 and 9.
+  std::string encoded;
+  auto writer_options = ArrayRecordWriterBase::Options()
+                            .set_group_size(kGroupSize)
+                            .set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  std::vector<std::string> records;
+  for (int i = 0; i < kNumRecords; ++i) {
+    records.push_back(absl::StrCat("record-", i));
+    ASSERT_TRUE(writer.WriteRecord(records.back()));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  // Unsorted, with duplicates, and several records from the same chunk.
+  const std::vector<uint64_t> indices = {7, 0, 9, 2, 7, 1, 0, 4};
+  for (ARThreadPool* pool :
+       {static_cast<ARThreadPool*>(nullptr), ArrayRecordGlobalPool()}) {
+    // 0: every chunk is read on its own. 1 MiB: all chunks share one buffer.
+    for (uint64_t readahead_buffer_size : {uint64_t{0}, uint64_t{1} << 20}) {
+      SCOPED_TRACE(absl::StrCat("pool: ", pool != nullptr,
+                                ", readahead: ", readahead_buffer_size));
+      auto reader_options =
+          ArrayRecordReaderBase::Options()
+              .set_readahead_buffer_size(readahead_buffer_size)
+              .set_max_parallelism(0);
+      auto reader = ArrayRecordReader(
+          riegeli::Maker<riegeli::StringReader>(encoded), reader_options, pool);
+      ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+
+      // A chunk is decoded by a single thread, so per-chunk state needs no
+      // lock.
+      std::vector<std::vector<uint64_t>> calls_per_chunk(4);
+      std::vector<int> num_calls(indices.size(), 0);
+      ASSERT_TRUE(reader
+                      .ParallelReadRecordsWithIndices(
+                          indices,
+                          [&](uint64_t indices_idx,
+                              absl::string_view record) -> absl::Status {
+                            EXPECT_EQ(record, records[indices[indices_idx]]);
+                            ++num_calls[indices_idx];
+                            calls_per_chunk[indices[indices_idx] / kGroupSize]
+                                .push_back(indices_idx);
+                            return absl::OkStatus();
+                          })
+                      .ok());
+      EXPECT_THAT(num_calls, Each(Eq(1)));
+      // Records of one chunk are delivered in the order they were requested.
+      EXPECT_THAT(calls_per_chunk[0], ElementsAre(1, 3, 5, 6));
+      EXPECT_THAT(calls_per_chunk[1], ElementsAre(7));
+      EXPECT_THAT(calls_per_chunk[2], ElementsAre(0, 4));
+      EXPECT_THAT(calls_per_chunk[3], ElementsAre(2));
+    }
+  }
 }
 
 // Simulates a Reader (such as riegeli::GcsReader opened with ReadLast) that
