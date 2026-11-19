@@ -106,6 +106,17 @@ _ARRAY_RECORD_READER_POOL_SIZE = flags.DEFINE_integer(
         " thread-safe reader per shard."
     ),
 )
+_GRAIN_REUSE_GCS_READERS = flags.DEFINE_bool(
+    "grain_reuse_gcs_readers",
+    False,
+    (
+        "Keep the readers that ArrayRecordDataSource opens for gs:// files"
+        " while counting records, and use them for reads instead of opening"
+        " each file again. Speeds up startup, but every gs:// file keeps an"
+        " open reader (index and GCS client) until the data source is closed,"
+        " including files this process never reads."
+    ),
+)
 
 
 def _run_in_parallel(
@@ -160,12 +171,34 @@ class _ReadInstruction:
     object.__setattr__(self, "num_records", self.end - self.start)
 
 
+def _is_gcs_path(path: epath.PathLike) -> bool:
+  return os.fspath(path).startswith("gs://")
+
+
 def _get_read_instructions(
     paths: Sequence[PathLikeOrFileInstruction],
+    readers: list[Any] | None = None,
+    reader_options_string: str = "",
 ) -> Sequence[_ReadInstruction]:
-  """Constructs ReadInstructions for given paths."""
+  """Constructs ReadInstructions for given paths.
 
-  def get_read_instruction(path: PathLikeOrFileInstruction) -> _ReadInstruction:
+  Opening a gs:// file is expensive. If `readers` is given, readers opened for
+  gs:// paths are kept in it at the path's index so that reads can reuse them.
+  All other readers are closed.
+
+  Args:
+    paths: The paths to read.
+    readers: A list with one slot per path that receives the kept readers, or
+      None to close every reader.
+    reader_options_string: Options for the kept readers.
+
+  Returns:
+    One ReadInstruction per path.
+  """
+
+  def get_read_instruction(
+      idx: int, path: PathLikeOrFileInstruction
+  ) -> _ReadInstruction:
     if isinstance(path, FileInstruction):
       start = path.skip
       end = path.skip + path.take
@@ -176,17 +209,25 @@ def _get_read_instructions(
       end = int(m.group(3))
     else:
       path = os.fspath(path)
-      reader = array_record_module.ArrayRecordReader(path)
       start = 0  # Using whole file.
-      end = reader.num_records()
-      reader.close()
+      if readers is not None and _is_gcs_path(path):
+        reader = _create_reader(path, reader_options_string)
+        readers[idx] = reader  # Stored first, so a failure below closes it.
+        _check_group_size(path, reader)
+        end = reader.num_records()
+      else:
+        reader = array_record_module.ArrayRecordReader(path)
+        end = reader.num_records()
+        reader.close()
     return _ReadInstruction(path, start, end)
 
   num_threads = _get_flag_value(_GRAIN_NUM_THREADS_COMPUTING_NUM_RECORDS)
   num_workers = min(len(paths), num_threads)
   return _run_in_parallel(
       function=get_read_instruction,
-      list_of_kwargs_to_function=[{"path": path} for path in paths],
+      list_of_kwargs_to_function=[
+          {"idx": idx, "path": path} for idx, path in enumerate(paths)
+      ],
       num_workers=num_workers,
   )
 
@@ -286,10 +327,19 @@ class ArrayRecordDataSource:
       self._reader_options_string = ",".join(
           [f"{k}:{v}" for k, v in reader_options.items()]
       )
-    self._read_instructions = _get_read_instructions(paths)
+    # With --grain_reuse_gcs_readers, readers for gs:// paths are opened while
+    # counting records and kept. Other readers are opened on first read.
+    self._readers: List[Any] = [None] * len(paths)
+    try:
+      self._read_instructions = _get_read_instructions(
+          paths,
+          self._readers if _get_flag_value(_GRAIN_REUSE_GCS_READERS) else None,
+          self._reader_options_string,
+      )
+    except BaseException:
+      self._close_readers()
+      raise
     self._paths = [ri.filename for ri in self._read_instructions]
-    # We open readers lazily when we need to read from them.
-    self._readers: List[Any] = [None] * len(self._read_instructions)
     self._lock = threading.Lock()
     self._num_records = sum(
         map(lambda x: x.num_records, self._read_instructions)
@@ -305,10 +355,13 @@ class ArrayRecordDataSource:
 
   def __exit__(self, exc_type, exc_value, traceback):
     logging.debug("__exit__ for ArrayRecordDataSource is called.")
+    self._close_readers()
+
+  def _close_readers(self) -> None:
     for reader in self._readers:
-      if reader:
+      if reader is not None:
         reader.close()
-    self._readers = [None] * len(self._read_instructions)
+    self._readers = [None] * len(self._readers)
 
   def __len__(self) -> int:
     return self._num_records
@@ -433,7 +486,7 @@ class ArrayRecordDataSource:
     return f"ArrayRecordDataSource(hash_of_paths={h.hexdigest()})"
 
 
-def _get_flag_value(flag: flags.FlagHolder[int]) -> int:
+def _get_flag_value(flag: flags.FlagHolder[T]) -> T:
   """Retrieves the flag value or the default if run outside of absl."""
   try:
     return flag.value
