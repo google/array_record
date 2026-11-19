@@ -28,6 +28,7 @@ limitations under the License.
 #include "cpp/array_record_reader.h"
 #include "cpp/array_record_writer.h"
 #include "cpp/thread_pool.h"
+#include "python/gcs_client.h"
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/pytypes.h"
@@ -104,8 +105,8 @@ PYBIND11_MODULE(array_record_module, m) {
                    status_or_option->footer_prefetch_bytes();
                return new array_record::ArrayRecordReader(
                    riegeli::Maker<riegeli::GcsReader>(
-                       google::cloud::storage::Client(),
-                       riegeli::GcsObject(path), std::move(gcs_reader_options),
+                       array_record::MakeGcsClient(), riegeli::GcsObject(path),
+                       std::move(gcs_reader_options),
                        footer_prefetch_bytes > 0
                            ? google::cloud::storage::ReadLast(
                                  footer_prefetch_bytes)
