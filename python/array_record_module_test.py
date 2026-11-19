@@ -18,12 +18,239 @@ from concurrent import futures
 from http import server
 import os
 import re
+import socket
+import struct
 import threading
+from unittest import mock
 
 from absl.testing import absltest
 
 from python.array_record_module import ArrayRecordReader
 from python.array_record_module import ArrayRecordWriter
+
+
+def _make_crc32c_table() -> list[int]:
+  table = []
+  for i in range(256):
+    crc = i
+    for _ in range(8):
+      crc = (crc >> 1) ^ 0x82F63B78 if crc & 1 else crc >> 1
+    table.append(crc)
+  return table
+
+
+_CRC32C_TABLE = _make_crc32c_table()
+
+
+def _crc32c(data: bytes) -> int:
+  crc = 0xFFFFFFFF
+  for byte in data:
+    crc = _CRC32C_TABLE[(crc ^ byte) & 0xFF] ^ (crc >> 8)
+  return crc ^ 0xFFFFFFFF
+
+
+def _encode_varint(value: int) -> bytes:
+  if value < 0:
+    value += 1 << 64
+  out = bytearray()
+  while value > 0x7F:
+    out.append((value & 0x7F) | 0x80)
+    value >>= 7
+  out.append(value)
+  return bytes(out)
+
+
+def _decode_varint(buf: bytes, pos: int) -> tuple[int, int]:
+  value = 0
+  shift = 0
+  while True:
+    byte = buf[pos]
+    pos += 1
+    value |= (byte & 0x7F) << shift
+    if not byte & 0x80:
+      return value, pos
+    shift += 7
+
+
+def _bytes_field(field_num: int, payload: bytes) -> bytes:
+  return (
+      _encode_varint((field_num << 3) | 2)
+      + _encode_varint(len(payload))
+      + payload
+  )
+
+
+def _varint_field(field_num: int, value: int) -> bytes:
+  return _encode_varint(field_num << 3) + _encode_varint(value)
+
+
+def _fixed32_field(field_num: int, value: int) -> bytes:
+  return _encode_varint((field_num << 3) | 5) + struct.pack("<I", value)
+
+
+def _parse_varint_fields(buf: bytes) -> dict[int, int]:
+  """Returns the varint fields of a serialized proto, skipping other types."""
+  fields = {}
+  pos = 0
+  while pos < len(buf):
+    tag, pos = _decode_varint(buf, pos)
+    field_num, wire_type = tag >> 3, tag & 7
+    if wire_type == 0:
+      fields[field_num], pos = _decode_varint(buf, pos)
+    elif wire_type == 1:
+      pos += 8
+    elif wire_type == 2:
+      length, pos = _decode_varint(buf, pos)
+      pos += length
+    elif wire_type == 5:
+      pos += 4
+    else:
+      break
+  return fields
+
+
+def _h2_frame(frame_type: int, flags: int, stream_id: int, payload: bytes):
+  length = len(payload)
+  return (
+      bytes([(length >> 16) & 0xFF, (length >> 8) & 0xFF, length & 0xFF])
+      + struct.pack("!BBI", frame_type, flags, stream_id)
+      + payload
+  )
+
+
+class _MockGcsGrpcServer:
+  """Minimal HTTP/2 server that answers google.storage.v2 ReadObject RPCs.
+
+  It serves byte ranges of one payload and counts TCP connections, so tests
+  can check how many gRPC channels the readers open.
+  """
+
+  def __init__(self, payload: bytes):
+    self.payload = payload
+    self.read_requests = 0
+    self.tcp_connections = 0
+    self._lock = threading.Lock()
+    self._stop = False
+    self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    self._sock.bind(("127.0.0.1", 0))
+    self._sock.listen(64)
+    self.port = self._sock.getsockname()[1]
+    self._thread = threading.Thread(target=self._accept_loop, daemon=True)
+    self._thread.start()
+
+  def _recv_exact(self, conn: socket.socket, size: int) -> bytes | None:
+    buf = bytearray()
+    while len(buf) < size:
+      try:
+        chunk = conn.recv(size - len(buf))
+      except OSError:
+        return None
+      if not chunk:
+        return None
+      buf.extend(chunk)
+    return bytes(buf)
+
+  def _read_object(self, request: bytes) -> bytes:
+    """Returns a ReadObjectResponse for a ReadObjectRequest."""
+    fields = _parse_varint_fields(request)
+    read_offset = fields.get(4, 0)
+    if read_offset >= 1 << 63:
+      read_offset -= 1 << 64
+    read_limit = fields.get(5, 0)
+    with self._lock:
+      self.read_requests += 1
+    total = len(self.payload)
+    if read_offset < 0:
+      start = max(0, total + read_offset)
+    else:
+      start = min(total, read_offset)
+    end = total if read_limit <= 0 else min(total, start + read_limit)
+    data = self.payload[start:end]
+    checksummed_data = _bytes_field(1, data) + _fixed32_field(2, _crc32c(data))
+    content_range = (
+        _varint_field(1, start)
+        + _varint_field(2, end)
+        + _varint_field(3, total)
+    )
+    metadata = _bytes_field(1, b"object") + _varint_field(6, total)
+    return (
+        _bytes_field(1, checksummed_data)
+        + _bytes_field(3, content_range)
+        + _bytes_field(4, metadata)
+    )
+
+  def _respond(self, conn: socket.socket, stream_id: int, request: bytes):
+    response = self._read_object(request)
+    grpc_frame = b"\x00" + struct.pack("!I", len(response)) + response
+    out = bytearray(
+        _h2_frame(
+            0x01,
+            0x04,
+            stream_id,
+            b"\x88\x00\x0ccontent-type\x10application/grpc",
+        )
+    )
+    for offset in range(0, len(grpc_frame), 16384):
+      out.extend(_h2_frame(0x00, 0x00, stream_id, grpc_frame[offset:][:16384]))
+    out.extend(_h2_frame(0x01, 0x05, stream_id, b"\x00\x0bgrpc-status\x010"))
+    conn.sendall(bytes(out))
+
+  def _handle_conn(self, conn: socket.socket):
+    with self._lock:
+      self.tcp_connections += 1
+    with conn:
+      if self._recv_exact(conn, 24) != b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n":
+        return
+      streams: dict[int, bytearray] = {}
+      try:
+        conn.sendall(
+            _h2_frame(0x04, 0x00, 0, struct.pack("!HI", 0x0004, 0x00FFFFFF))
+            + _h2_frame(0x08, 0x00, 0, struct.pack("!I", 0x00FF0000))
+        )
+        while not self._stop:
+          header = self._recv_exact(conn, 9)
+          if not header:
+            return
+          length = (header[0] << 16) | (header[1] << 8) | header[2]
+          frame_type, flags, stream_id = struct.unpack("!BBI", header[3:9])
+          stream_id &= 0x7FFFFFFF
+          payload = self._recv_exact(conn, length) if length else b""
+          if payload is None:
+            return
+          if frame_type == 0x04 and not flags & 0x01:  # SETTINGS
+            conn.sendall(_h2_frame(0x04, 0x01, 0, b""))
+          elif frame_type == 0x06 and not flags & 0x01:  # PING
+            conn.sendall(_h2_frame(0x06, 0x01, 0, payload))
+          elif frame_type == 0x03:  # RST_STREAM
+            streams.pop(stream_id, None)
+          elif frame_type == 0x01 and stream_id:  # HEADERS
+            streams.setdefault(stream_id, bytearray())
+          elif frame_type == 0x00 and stream_id:  # DATA
+            if flags & 0x08:
+              payload = payload[1 : len(payload) - payload[0]]
+            streams.setdefault(stream_id, bytearray()).extend(payload)
+          if stream_id and flags & 0x01 and stream_id in streams:  # END_STREAM
+            raw = bytes(streams.pop(stream_id))
+            message_length = struct.unpack("!I", raw[1:5])[0]
+            self._respond(conn, stream_id, raw[5 : 5 + message_length])
+      except OSError:
+        return
+
+  def _accept_loop(self):
+    while not self._stop:
+      try:
+        conn, _ = self._sock.accept()
+      except OSError:
+        return
+      threading.Thread(
+          target=self._handle_conn, args=(conn,), daemon=True
+      ).start()
+
+  def close(self):
+    self._stop = True
+    self._sock.close()
+    self._thread.join(timeout=5.0)
 
 
 class _MockGcsServer:
@@ -364,6 +591,78 @@ class ArrayRecordModuleTest(absltest.TestCase):
       else:
         os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = old_endpoint
       mock_gcs.close()
+
+  def _write_records(self, count: int) -> tuple[list[bytes], bytes]:
+    writer = ArrayRecordWriter(self.test_file, "group_size:1,uncompressed")
+    records = [
+        f"record-{i:04d}-".encode() + (b"y" * 4096) for i in range(count)
+    ]
+    for r in records:
+      writer.write(r)
+    writer.close()
+    with open(self.test_file, "rb") as f:
+      return records, f.read()
+
+  def _read_concurrently(self, records: list[bytes]) -> None:
+    def worker(idx: int):
+      reader = ArrayRecordReader(
+          f"gs://test-bucket/shard-{idx:05d}",
+          "readahead_buffer_size:0,max_parallelism:0",
+      )
+      fetched = reader.read([0, idx % len(records), len(records) - 1])
+      reader.close()
+      return fetched
+
+    with futures.ThreadPoolExecutor(max_workers=16) as executor:
+      results = list(executor.map(worker, range(32)))
+    for idx, fetched in enumerate(results):
+      self.assertEqual(
+          fetched, [records[0], records[idx % len(records)], records[-1]]
+      )
+
+  def test_gcs_grpc_transport_shares_one_client(self):
+    # The shared gRPC client binds to its endpoint on first use, so this is the
+    # only test in this process that may read over gRPC.
+    records, payload = self._write_records(24)
+    mock_grpc = _MockGcsGrpcServer(payload)
+    env = {
+        "ARRAY_RECORD_GCS_TRANSPORT": "grpc",
+        "ARRAY_RECORD_GCS_GRPC_CHANNELS": "2",
+        "CLOUD_STORAGE_EMULATOR_ENDPOINT": f"http://127.0.0.1:{mock_grpc.port}",
+        "CLOUD_STORAGE_EXPERIMENTAL_GRPC_TESTBENCH_ENDPOINT": (
+            f"127.0.0.1:{mock_grpc.port}"
+        ),
+    }
+    try:
+      with mock.patch.dict(os.environ, env):
+        os.environ.pop("GOOGLE_CLOUD_CPP_STORAGE_GRPC_CONFIG", None)
+        self._read_concurrently(records)
+    finally:
+      mock_grpc.close()
+
+    self.assertGreater(mock_grpc.read_requests, 0)
+    # 32 readers share one client with 2 channels. A client per reader would
+    # open at least one connection per reader. gRPC may reconnect a channel, so
+    # allow a few more connections than channels.
+    self.assertLess(mock_grpc.tcp_connections, 8)
+
+  def test_gcs_grpc_config_none_keeps_http(self):
+    records, payload = self._write_records(24)
+    mock_gcs = _MockGcsServer(payload)
+    env = {
+        "ARRAY_RECORD_GCS_TRANSPORT": "grpc",
+        "GOOGLE_CLOUD_CPP_STORAGE_GRPC_CONFIG": "none",
+        "CLOUD_STORAGE_EMULATOR_ENDPOINT": f"http://127.0.0.1:{mock_gcs.port}",
+    }
+    try:
+      with mock.patch.dict(os.environ, env):
+        self._read_concurrently(records)
+    finally:
+      mock_gcs.close()
+
+    # Every reader opens its own HTTP client, so the reads reach the HTTP
+    # server.
+    self.assertNotEmpty(mock_gcs.requests)
 
 
 if __name__ == "__main__":

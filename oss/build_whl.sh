@@ -20,7 +20,7 @@ function main() {
   write_to_bazelrc "build --enable_platform_specific_config"
   write_to_bazelrc "build --@rules_python//python/config_settings:python_version=${PYTHON_VERSION}"
   write_to_bazelrc "test --@rules_python//python/config_settings:python_version=${PYTHON_VERSION}"
-  write_to_bazelrc "test --action_env PYTHON_VERSION=${PYTHON_VERSION}"
+  write_to_bazelrc "build --action_env PYTHON_VERSION=${PYTHON_VERSION}"
   write_to_bazelrc "test --test_timeout=300"
 
   write_to_bazelrc "build -c opt"

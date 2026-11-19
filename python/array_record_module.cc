@@ -16,6 +16,7 @@ limitations under the License.
 #include <stddef.h>
 #include <stdint.h>
 
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -23,11 +24,15 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "cpp/array_record_reader.h"
 #include "cpp/array_record_writer.h"
 #include "cpp/thread_pool.h"
+#include "google/cloud/grpc_options.h"
+#include "google/cloud/options.h"
+#include "google/cloud/storage/grpc_plugin.h"
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/pytypes.h"
@@ -39,6 +44,59 @@ limitations under the License.
 #include "riegeli/gcs/gcs_reader.h"
 
 namespace py = pybind11;
+
+namespace {
+
+bool IsEnv(const char* name, absl::string_view value) {
+  const char* actual = std::getenv(name);
+  return actual != nullptr && absl::string_view(actual) == value;
+}
+
+// Returns the GCS client for one reader.
+//
+// HTTP is the default, with a new client per reader. Readers don't share an
+// HTTP client: concurrent use of one client's curl handle pool hits a libcurl
+// data race (Curl_peer_unlink).
+//
+// ARRAY_RECORD_GCS_TRANSPORT=grpc selects gRPC. All readers then share one gRPC
+// client, which uses DirectPath when it is available. A client per reader would
+// not share connections: google-cloud-cpp gives every gRPC client its own
+// subchannel pool (GRPC_ARG_USE_LOCAL_SUBCHANNEL_POOL) and its own DirectPath
+// bootstrap channel. ARRAY_RECORD_GCS_GRPC_CHANNELS sets the shared client's
+// number of gRPC channels.
+// With GOOGLE_CLOUD_CPP_STORAGE_GRPC_CONFIG=none, MakeGrpcClient() returns an
+// HTTP client, so readers stay on the HTTP path.
+//
+// Limitations of the gRPC transport:
+// - Without ARRAY_RECORD_GCS_GRPC_CHANNELS, google-cloud-cpp picks the number
+//   of channels, which is 1 for DirectPath. One channel can limit throughput
+//   when many threads read at once.
+// - The client is created on first use and reused for the life of the
+//   process. A process that forks after opening a gs:// reader must not use
+//   it in the child.
+// - DirectPath needs the VM's service account to have
+//   roles/trafficdirector.client. Without it, gRPC falls back to CloudPath.
+google::cloud::storage::Client GetGcsClient() {
+  if (!IsEnv("ARRAY_RECORD_GCS_TRANSPORT", "grpc") ||
+      IsEnv("GOOGLE_CLOUD_CPP_STORAGE_GRPC_CONFIG", "none")) {
+    return google::cloud::storage::Client();
+  }
+  // Never destroyed, because readers can outlive static destruction.
+  static const auto* const kGrpcClient = [] {
+    google::cloud::Options options;
+    const char* channels = std::getenv("ARRAY_RECORD_GCS_GRPC_CHANNELS");
+    int num_channels = 0;
+    if (channels != nullptr && absl::SimpleAtoi(channels, &num_channels) &&
+        num_channels > 0) {
+      options.set<google::cloud::GrpcNumChannelsOption>(num_channels);
+    }
+    return new google::cloud::storage::Client(
+        google::cloud::storage::MakeGrpcClient(std::move(options)));
+  }();
+  return *kGrpcClient;
+}
+
+}  // namespace
 
 PYBIND11_MODULE(array_record_module, m) {
   using array_record::ArrayRecordReaderBase;
@@ -104,8 +162,8 @@ PYBIND11_MODULE(array_record_module, m) {
                    status_or_option->footer_prefetch_bytes();
                return new array_record::ArrayRecordReader(
                    riegeli::Maker<riegeli::GcsReader>(
-                       google::cloud::storage::Client(),
-                       riegeli::GcsObject(path), std::move(gcs_reader_options),
+                       GetGcsClient(), riegeli::GcsObject(path),
+                       std::move(gcs_reader_options),
                        footer_prefetch_bytes > 0
                            ? google::cloud::storage::ReadLast(
                                  footer_prefetch_bytes)
