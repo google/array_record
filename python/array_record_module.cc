@@ -16,7 +16,6 @@ limitations under the License.
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -29,6 +28,7 @@ limitations under the License.
 #include "cpp/array_record_reader.h"
 #include "cpp/array_record_writer.h"
 #include "cpp/thread_pool.h"
+#include "python/gcs_client.h"
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/pytypes.h"
@@ -40,31 +40,6 @@ limitations under the License.
 #include "riegeli/gcs/gcs_reader.h"
 
 namespace py = pybind11;
-
-namespace {
-
-// Returns the GCS client used by `ArrayRecordReader` for `gs://` paths.
-//
-// When a storage emulator is configured, google-cloud-cpp 3.x still uses
-// Application Default Credentials, even though `Client()` documents otherwise.
-// Outside of GCE they look up the metadata server and the request is retried
-// until the retry policy expires, so the reader appears to hang. Use insecure
-// credentials, as emulators expect.
-//
-// TODO(zhixiangli): Use `google::cloud::storage::Client()` again once
-// https://github.com/googleapis/google-cloud-cpp/issues/16678 is fixed in the
-// google-cloud-cpp release used by the OSS build.
-google::cloud::storage::Client MakeGcsClient() {
-  google::cloud::Options options;
-  if (std::getenv("CLOUD_STORAGE_EMULATOR_ENDPOINT") != nullptr ||
-      std::getenv("CLOUD_STORAGE_TESTBENCH_ENDPOINT") != nullptr) {
-    options.set<google::cloud::UnifiedCredentialsOption>(
-        google::cloud::MakeInsecureCredentials());
-  }
-  return google::cloud::storage::Client(std::move(options));
-}
-
-}  // namespace
 
 PYBIND11_MODULE(array_record_module, m) {
   using array_record::ArrayRecordReaderBase;
@@ -130,8 +105,8 @@ PYBIND11_MODULE(array_record_module, m) {
                    status_or_option->footer_prefetch_bytes();
                return new array_record::ArrayRecordReader(
                    riegeli::Maker<riegeli::GcsReader>(
-                       MakeGcsClient(),
-                       riegeli::GcsObject(path), std::move(gcs_reader_options),
+                       array_record::MakeGcsClient(), riegeli::GcsObject(path),
+                       std::move(gcs_reader_options),
                        footer_prefetch_bytes > 0
                            ? google::cloud::storage::ReadLast(
                                  footer_prefetch_bytes)

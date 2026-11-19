@@ -2,10 +2,42 @@
 
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@pypi//:requirements.bzl", "requirement")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 
 package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])
+
+cc_library(
+    name = "gcs_client",
+    srcs = ["gcs_client.cc"],
+    hdrs = ["gcs_client.h"],
+    linkstatic = True,
+    deps = [
+        "@abseil-cpp//absl/synchronization",
+        "@abseil-cpp//absl/time",
+        "@abseil-cpp//absl/types:span",
+        "@google_cloud_cpp//:common",
+        "@google_cloud_cpp//:storage",
+    ],
+)
+
+cc_test(
+    name = "gcs_client_test",
+    srcs = ["gcs_client_test.cc"],
+    deps = [
+        ":gcs_client",
+        "@abseil-cpp//absl/base:core_headers",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/synchronization",
+        "@abseil-cpp//absl/time",
+        "@abseil-cpp//absl/types:span",
+        "@google_cloud_cpp//:common",
+        "@google_cloud_cpp//:storage",
+        "@googletest//:gtest_main",
+    ],
+)
 
 pybind_extension(
     name = "array_record_module",
@@ -26,6 +58,7 @@ pybind_extension(
         "//conditions:default": [],
     }),
     deps = [
+        ":gcs_client",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/strings:str_format",
