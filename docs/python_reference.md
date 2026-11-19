@@ -58,6 +58,41 @@ The options string can contain the following comma-separated options:
 * `index_storage_options:in_memory/offloaded` - Specifies to store the record
   index in memory or on disk (default: `in_memory`)
 
+#### Google Cloud Storage
+
+`path` can be a `gs://bucket/object` path. Only `ArrayRecordReader` supports
+`gs://` paths. `ArrayRecordWriter` doesn't.
+
+Readers use HTTP by default, with one client per reader. The environment
+variable `ARRAY_RECORD_GCS_TRANSPORT` selects the transport: `http` (default) or
+`grpc`, case-insensitive. Unset or empty means `http`. Any other value raises
+`ValueError`. With `grpc`, all readers in the process share one gRPC client.
+This uses far fewer connections, file descriptors and memory than HTTP, and in
+our Grain benchmarks it also shortened the time to first batch and raised
+throughput.
+
+The gRPC transport has these limitations:
+
+* Reads go over
+  [DirectPath](https://cloud.google.com/storage/docs/direct-connectivity) only
+  from a Compute Engine VM with an attached service account, in the bucket's
+  region (or one of its regions), with egress to the DirectPath IP ranges.
+  Otherwise they go over CloudPath, where all of the client's streams can share
+  one channel and the server allows 100 concurrent streams on it. Each open
+  reader holds one stream until it's closed, so more than about 100 open readers
+  stop responding. Use HTTP in that case.
+* With `grpc`, an HTTP emulator (`CLOUD_STORAGE_EMULATOR_ENDPOINT` or
+  `CLOUD_STORAGE_TESTBENCH_ENDPOINT`) still selects HTTP, unless
+  `CLOUD_STORAGE_EXPERIMENTAL_GRPC_TESTBENCH_ENDPOINT` is also set. Only that
+  variable changes the gRPC endpoint.
+* The shared client is created when the first `gs://` reader opens. It can't be
+  used in a process created by `fork()` after that. Opening a `gs://` reader in
+  such a process raises `RuntimeError`. So do `seek()`, `read()` and
+  `read_all()` on a `gs://` reader opened before the fork. Start worker
+  processes with the `spawn` or `forkserver` method. On Linux, PyTorch
+  `DataLoader` workers and `multiprocessing` use `fork` by default up to
+  Python 3.13.
+
 ### `ok() -> bool`
 
 Returns true when the reader object is having a healthy state.
