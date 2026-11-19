@@ -16,6 +16,7 @@ limitations under the License.
 #include "cpp/array_record_reader.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -29,6 +30,7 @@ limitations under the License.
 #include "gtest/gtest.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "cpp/array_record_writer.h"
 #include "cpp/common.h"
@@ -785,6 +787,120 @@ TEST(ArrayRecordReaderTest, FooterEndsAtExactBlockBoundaryWithoutPadding) {
     EXPECT_EQ(record_view, expected_record);
     ASSERT_TRUE(reader.Close());
   }
+}
+
+TEST(ArrayRecordReaderTest, ParallelReadRecordsWithIndicesDuplicatesAndOrder) {
+  std::string encoded;
+  constexpr int kNumRecords = 20;
+  {
+    auto writer_options =
+        ArrayRecordWriterBase::Options().set_group_size(3).set_uncompressed();
+    auto writer =
+        ArrayRecordWriter(riegeli::Maker<riegeli::StringWriter>(&encoded),
+                          writer_options, nullptr);
+    for (int i = 0; i < kNumRecords; ++i) {
+      ASSERT_TRUE(writer.WriteRecord(absl::StrCat("record_", i)));
+    }
+    ASSERT_TRUE(writer.Close());
+  }
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(encoded, encoded.size(),
+                                             &pull_count, &new_reader_count),
+      ArrayRecordReaderBase::Options(), ArrayRecordGlobalPool());
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  const int init_new_reader_count = new_reader_count;
+
+  // Empty indices should succeed without opening any backing sub-readers.
+  bool empty_called = false;
+  ASSERT_TRUE(reader
+                  .ParallelReadRecordsWithIndices(
+                      {},
+                      [&](uint64_t, absl::string_view) -> absl::Status {
+                        empty_called = true;
+                        return absl::OkStatus();
+                      })
+                  .ok());
+  EXPECT_FALSE(empty_called);
+  EXPECT_EQ(new_reader_count, init_new_reader_count);
+
+  // Out-of-order and duplicate indices across and within chunks.
+  const std::vector<uint64_t> indices = {17, 2, 17, 0, 2, 8, 19, 8, 1, 16};
+  std::vector<std::string> results(indices.size());
+  std::vector<std::atomic<int>> call_counts(indices.size());
+  for (auto& count : call_counts) {
+    count.store(0, std::memory_order_relaxed);
+  }
+  absl::Status status = reader.ParallelReadRecordsWithIndices(
+      indices, [&](uint64_t indices_idx, absl::string_view data) {
+        if (indices_idx >= results.size()) {
+          return absl::OutOfRangeError("unexpected indices_idx");
+        }
+        results[indices_idx] = std::string(data);
+        call_counts[indices_idx].fetch_add(1, std::memory_order_relaxed);
+        return absl::OkStatus();
+      });
+  ASSERT_TRUE(status.ok()) << status.message();
+  for (size_t i = 0; i < indices.size(); ++i) {
+    EXPECT_EQ(call_counts[i].load(std::memory_order_relaxed), 1);
+    EXPECT_EQ(results[i], absl::StrCat("record_", indices[i]));
+  }
+  ASSERT_TRUE(reader.Close());
+}
+
+TEST(ArrayRecordReaderTest,
+     ParallelReadRecordsWithIndicesCoalescesPastReadaheadOffset) {
+  constexpr size_t kLargeRecordBytes = 128 << 10;  // 128 KiB
+  constexpr uint64_t kReadaheadBytes = 64 << 10;   // 64 KiB
+  std::string encoded;
+  {
+    auto writer_options =
+        ArrayRecordWriterBase::Options().set_group_size(1).set_uncompressed();
+    auto writer =
+        ArrayRecordWriter(riegeli::Maker<riegeli::StringWriter>(&encoded),
+                          writer_options, nullptr);
+    // Record 0 pushes chunks 1..3 strictly past file offset 128 KiB.
+    ASSERT_TRUE(writer.WriteRecord(std::string(kLargeRecordBytes, 'x')));
+    ASSERT_TRUE(writer.WriteRecord("small_1"));
+    ASSERT_TRUE(writer.WriteRecord("small_2"));
+    ASSERT_TRUE(writer.WriteRecord("small_3"));
+    // Record 4 separates chunks 1..3 from chunks 5..6 by > 64 KiB.
+    ASSERT_TRUE(writer.WriteRecord(std::string(kLargeRecordBytes, 'y')));
+    ASSERT_TRUE(writer.WriteRecord("small_5"));
+    ASSERT_TRUE(writer.WriteRecord("small_6"));
+    ASSERT_TRUE(writer.Close());
+  }
+
+  int pull_count = 0;
+  int new_reader_count = 0;
+  auto reader_options = ArrayRecordReaderBase::Options()
+                            .set_readahead_buffer_size(kReadaheadBytes)
+                            .set_max_parallelism(1);
+  auto reader = ArrayRecordReader(
+      riegeli::Maker<TailPrefetchTestReader>(encoded, encoded.size(),
+                                             &pull_count, &new_reader_count),
+      reader_options, nullptr);
+  ASSERT_TRUE(reader.status().ok()) << reader.status().message();
+  const int init_new_reader_count = new_reader_count;
+
+  const std::vector<uint64_t> indices = {6, 3, 1, 5};
+  std::vector<std::string> results(indices.size());
+  absl::Status status = reader.ParallelReadRecordsWithIndices(
+      indices, [&](uint64_t indices_idx, absl::string_view data) {
+        results[indices_idx] = std::string(data);
+        return absl::OkStatus();
+      });
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(results[0], "small_6");
+  EXPECT_EQ(results[1], "small_3");
+  EXPECT_EQ(results[2], "small_1");
+  EXPECT_EQ(results[3], "small_5");
+  // Chunks {1, 3} fit within one 64 KiB buffer despite starting past offset
+  // 128 KiB, and chunks {5, 6} fit within a second 64 KiB buffer.
+  EXPECT_EQ(new_reader_count - init_new_reader_count, 2);
+  ASSERT_TRUE(reader.Close());
 }
 
 }  // namespace

@@ -646,78 +646,118 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
   if (!ok()) {
     return status();
   }
-  if (state_->chunk_offsets->empty()) {
+  if (state_->chunk_offsets->empty() || indices.empty()) {
     return absl::OkStatus();
   }
 
-  struct IndexPair {
-    IndexPair(uint64_t inner_record_index, uint64_t indices_index)
-        : inner_record_index(inner_record_index),
-          indices_index(indices_index) {}
+  struct IndexedRecordRequest {
+    uint64_t chunk_idx;
     // Index of a record within a chunk.
-    // Invariant: inner_record_index < group_size_ == num records per chunk.
+    // Invariant: inner_record_index < record_group_size == num records per
+    // chunk.
     uint64_t inner_record_index;
     // Index to an entry in indices.
     uint64_t indices_index;
   };
 
-  std::vector<std::vector<IndexPair>> per_chunk_indices(
-      state_->chunk_offsets->size());
-  std::vector<std::vector<uint64_t>> chunk_indices_per_buffer;
-  for (auto [indices_idx, record_idx] : Enumerate(indices)) {
+  const uint64_t num_chunks = state_->chunk_offsets->size();
+  std::vector<IndexedRecordRequest> requests;
+  requests.reserve(indices.size());
+  for (size_t indices_idx = 0; indices_idx < indices.size(); ++indices_idx) {
+    const uint64_t record_idx = indices[indices_idx];
     if (record_idx >= state_->num_records) {
       return OutOfRangeError("index %d out of bound %d", record_idx,
                              state_->num_records);
     }
-    uint64_t chunk_idx = record_idx / state_->record_group_size;
-    if (chunk_idx >= per_chunk_indices.size()) {
+    const uint64_t chunk_idx = record_idx / state_->record_group_size;
+    if (chunk_idx >= num_chunks) {
       return OutOfRangeError("chunk_idx out of bounds");
     }
-    uint64_t local_idx = record_idx - chunk_idx * state_->record_group_size;
-    per_chunk_indices[chunk_idx].emplace_back(local_idx, indices_idx);
+    const uint64_t local_idx =
+        record_idx - chunk_idx * state_->record_group_size;
+    requests.push_back(
+        {chunk_idx, local_idx, static_cast<uint64_t>(indices_idx)});
   }
-  bool in_buffer = false;
-  for (auto i : Seq(state_->chunk_offsets->size())) {
-    // Find the first chunk containing indices
-    if (!in_buffer) {
-      if (!per_chunk_indices[i].empty()) {
-        chunk_indices_per_buffer.push_back({i});
-        in_buffer = true;
-        continue;
+
+  std::sort(requests.begin(), requests.end(),
+            [](const IndexedRecordRequest& a, const IndexedRecordRequest& b) {
+              if (a.chunk_idx != b.chunk_idx) {
+                return a.chunk_idx < b.chunk_idx;
+              }
+              return a.indices_index < b.indices_index;
+            });
+
+  struct ChunkSpan {
+    uint64_t chunk_idx;
+    size_t req_begin;
+    size_t req_end;
+  };
+  std::vector<ChunkSpan> chunk_spans;
+  chunk_spans.reserve(requests.size());
+  for (size_t pos = 0; pos < requests.size();) {
+    const uint64_t chunk_idx = requests[pos].chunk_idx;
+    size_t next = pos + 1;
+    while (next < requests.size() && requests[next].chunk_idx == chunk_idx) {
+      ++next;
+    }
+    chunk_spans.push_back({chunk_idx, pos, next});
+    pos = next;
+  }
+
+  struct BufferSpan {
+    size_t chunk_begin;
+    size_t chunk_end;
+  };
+  const uint64_t readahead_buffer_size =
+      state_->options.readahead_buffer_size();
+  std::vector<BufferSpan> buffers;
+  if (readahead_buffer_size > 0) {
+    size_t buf_chunk_begin = 0;
+    uint64_t buf_start_offset =
+        (*state_->chunk_offsets)[chunk_spans[0].chunk_idx];
+    for (size_t i = 1; i < chunk_spans.size(); ++i) {
+      const uint64_t chunk_idx = chunk_spans[i].chunk_idx;
+      const uint64_t chunk_end_offset = state_->ChunkEndOffset(chunk_idx);
+      if (chunk_end_offset < buf_start_offset ||
+          chunk_end_offset - buf_start_offset >= readahead_buffer_size) {
+        buffers.push_back({buf_chunk_begin, i});
+        buf_chunk_begin = i;
+        buf_start_offset = (*state_->chunk_offsets)[chunk_idx];
       }
     }
-    // Regular cases.
-    if (!per_chunk_indices[i].empty()) {
-      uint64_t buf_size =
-          state_->ChunkEndOffset(i) - chunk_indices_per_buffer.back()[0];
-      if (buf_size < state_->options.readahead_buffer_size()) {
-        chunk_indices_per_buffer.back().push_back(i);
-      } else {
-        chunk_indices_per_buffer.push_back({i});
-      }
-    }
+    buffers.push_back({buf_chunk_begin, chunk_spans.size()});
   }
+
+  const size_t num_buffers =
+      readahead_buffer_size > 0 ? buffers.size() : chunk_spans.size();
   auto reader = get_backing_reader();
   auto status = ParallelForWithStatus<1>(
-      IndicesOf(chunk_indices_per_buffer), state_->pool,
-      [&](size_t buf_idx) -> absl::Status {
-        auto buffer_chunks =
-            absl::MakeConstSpan(chunk_indices_per_buffer[buf_idx]);
-        uint64_t buf_len = state_->ChunkEndOffset(buffer_chunks.back()) -
-                           (*state_->chunk_offsets)[buffer_chunks[0]];
+      Seq(num_buffers), state_->pool, [&](size_t buf_idx) -> absl::Status {
+        const size_t span_begin =
+            readahead_buffer_size > 0 ? buffers[buf_idx].chunk_begin : buf_idx;
+        const size_t span_end = readahead_buffer_size > 0
+                                    ? buffers[buf_idx].chunk_end
+                                    : buf_idx + 1;
+        const uint64_t first_chunk_idx = chunk_spans[span_begin].chunk_idx;
+        const uint64_t last_chunk_idx = chunk_spans[span_end - 1].chunk_idx;
+        const uint64_t buf_start = (*state_->chunk_offsets)[first_chunk_idx];
+        const uint64_t buf_len =
+            state_->ChunkEndOffset(last_chunk_idx) - buf_start;
         AR_ENDO_JOB(
             "ArrayRecordReaderBase::ParallelReadRecordsWithIndices",
             absl::StrCat("buffer_idx: ", buf_idx, " buffer_len: ", buf_len));
         MaskedReader masked_reader(riegeli::kClosed);
         {
           AR_ENDO_SCOPE("MaskedReader");
-          masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[buffer_chunks[0]]),
-              buf_len);
+          masked_reader = MaskedReader(reader->NewReader(buf_start), buf_len);
         }
-        for (auto chunk_idx : buffer_chunks) {
+        for (size_t span_idx = span_begin; span_idx < span_end; ++span_idx) {
           AR_ENDO_SCOPE("ChunkReader+ChunkDecoder");
-          masked_reader.Seek((*state_->chunk_offsets)[chunk_idx]);
+          const ChunkSpan& span = chunk_spans[span_idx];
+          const uint64_t chunk_offset =
+              span_idx == span_begin ? buf_start
+                                     : (*state_->chunk_offsets)[span.chunk_idx];
+          masked_reader.Seek(chunk_offset);
           riegeli::DefaultChunkReader<> chunk_reader(&masked_reader);
           Chunk chunk;
           if (ABSL_PREDICT_FALSE(!chunk_reader.ReadChunk(chunk))) {
@@ -728,13 +768,13 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
             return decoder.status();
           }
 
-          for (const auto& index_pair : per_chunk_indices[chunk_idx]) {
-            decoder.SetIndex(index_pair.inner_record_index);
+          for (size_t r = span.req_begin; r < span.req_end; ++r) {
+            decoder.SetIndex(requests[r].inner_record_index);
             absl::string_view record;
             if (ABSL_PREDICT_FALSE(!decoder.ReadRecord(record))) {
               return decoder.status();
             }
-            auto s = callback(index_pair.indices_index, record);
+            auto s = callback(requests[r].indices_index, record);
             if (ABSL_PREDICT_FALSE(!s.ok())) {
               return s;
             }
