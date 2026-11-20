@@ -113,9 +113,6 @@ TEST_P(ArrayRecordReaderTest, MoveTest) {
 
   auto reader_opt = ArrayRecordReaderBase::Options();
   reader_opt.set_index_storage_option(index_storage_option());
-  if (index_storage_option() == IndexStorageOption::kOffloaded) {
-    reader_opt.set_footer_prefetch_bytes(0);
-  }
   if (optimize_for_random_access()) {
     reader_opt.set_max_parallelism(0);
     reader_opt.set_readahead_buffer_size(0);
@@ -206,9 +203,6 @@ TEST_P(ArrayRecordReaderTest, RandomDatasetTest) {
 
   auto reader_opt = ArrayRecordReaderBase::Options();
   reader_opt.set_index_storage_option(index_storage_option());
-  if (index_storage_option() == IndexStorageOption::kOffloaded) {
-    reader_opt.set_footer_prefetch_bytes(0);
-  }
   if (optimize_for_random_access()) {
     reader_opt.set_max_parallelism(0);
     reader_opt.set_readahead_buffer_size(0);
@@ -353,11 +347,19 @@ TEST(ArrayRecordReaderOptionTest, ParserTest) {
               ArrayRecordReaderBase::Options::kDefaultFooterPrefetchBytes);
   }
   {
-    auto status_or_option = ArrayRecordReaderBase::Options::FromString(
-        "index_storage_option:offloaded");
-    EXPECT_FALSE(status_or_option.ok());
-    EXPECT_EQ(status_or_option.status().code(),
-              absl::StatusCode::kInvalidArgument);
+    auto option = ArrayRecordReaderBase::Options::FromString(
+                      "index_storage_option:offloaded")
+                      .value();
+    EXPECT_EQ(option.index_storage_option(), IndexStorageOption::kOffloaded);
+    EXPECT_EQ(option.footer_prefetch_bytes(), 0);
+  }
+  {
+    auto option =
+        ArrayRecordReaderBase::Options::FromString(
+            "index_storage_option:offloaded,footer_prefetch_bytes:auto")
+            .value();
+    EXPECT_EQ(option.index_storage_option(), IndexStorageOption::kOffloaded);
+    EXPECT_EQ(option.footer_prefetch_bytes(), 0);
   }
   {
     auto option = ArrayRecordReaderBase::Options::FromString(
@@ -365,6 +367,13 @@ TEST(ArrayRecordReaderOptionTest, ParserTest) {
                       .value();
     EXPECT_EQ(option.index_storage_option(), IndexStorageOption::kOffloaded);
     EXPECT_EQ(option.footer_prefetch_bytes(), 0);
+  }
+  {
+    auto status_or_option = ArrayRecordReaderBase::Options::FromString(
+        "index_storage_option:offloaded,footer_prefetch_bytes:512K");
+    EXPECT_FALSE(status_or_option.ok());
+    EXPECT_EQ(status_or_option.status().code(),
+              absl::StatusCode::kInvalidArgument);
   }
 }
 
@@ -682,9 +691,10 @@ TEST(ArrayRecordReaderTest, OffloadedIndexWithPositiveFooterPrefetchFails) {
   }
   ASSERT_TRUE(writer.Close());
 
-  auto reader_options = ArrayRecordReaderBase::Options()
-                            .set_index_storage_option(
-                                IndexStorageOption::kOffloaded);
+  auto reader_options =
+      ArrayRecordReaderBase::Options()
+          .set_index_storage_option(IndexStorageOption::kOffloaded)
+          .set_footer_prefetch_bytes(512 * 1024);
   auto reader = ArrayRecordReader(
       riegeli::Maker<riegeli::StringReader>(encoded), reader_options, nullptr);
   EXPECT_FALSE(reader.status().ok());

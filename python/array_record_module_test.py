@@ -277,12 +277,13 @@ class ArrayRecordModuleTest(absltest.TestCase):
       self.assertEqual(mock_gcs.tcp_connections - conns_before, 1)
       self.assertEqual(mock_gcs.aborted_streams, 0)
 
-      # Opening with index_storage_option:offloaded without
-      # footer_prefetch_bytes:0 raises ValueError.
+      # Explicitly setting footer_prefetch_bytes > 0 with
+      # index_storage_option:offloaded raises ValueError.
       with self.assertRaises(ValueError):
         ArrayRecordReader(
             "gs://test-bucket/shard-00000-of-00001",
-            "index_storage_option:offloaded,readahead_buffer_size:0,max_parallelism:0",
+            "index_storage_option:offloaded,footer_prefetch_bytes:512K,"
+            "readahead_buffer_size:0,max_parallelism:0",
             file_reader_buffer_size=32768,
         )
 
@@ -317,6 +318,25 @@ class ArrayRecordModuleTest(absltest.TestCase):
       )
       reader.close()
       self.assertEqual(mock_gcs.tcp_connections - conns_before, 1)
+
+      # Opening with index_storage_option:offloaded defaults
+      # footer_prefetch_bytes to 0 and skips tail prefetching.
+      mock_gcs.requests.clear()
+      reader = ArrayRecordReader(
+          "gs://test-bucket/shard-00000-of-00001",
+          "index_storage_option:offloaded,"
+          "readahead_buffer_size:0,max_parallelism:0",
+          file_reader_buffer_size=32768,
+      )
+      self.assertEqual(reader.num_records(), num_records)
+      self.assertEqual(reader.read([17]), [records[17]])
+      reader.close()
+      self.assertTrue(
+          all(
+              not (r["range"] or "").startswith("bytes=-")
+              for r in mock_gcs.requests
+          )
+      )
     finally:
       if old_endpoint is None:
         os.environ.pop("CLOUD_STORAGE_EMULATOR_ENDPOINT", None)
