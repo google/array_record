@@ -91,8 +91,9 @@ class ArrayRecordReaderBase : public riegeli::Object {
     //   index_storage_option ::= `in_memory` or `offloaded`. Default to
     //     `in_memory`.
     //   footer_prefetch_bytes ::= `auto` or non-negative integer expressed as
-    //     real with optional suffix [BKMG]. Defaults to 1MB. Only supported
-    //     with `index_storage_option:in_memory`.
+    //     real with optional suffix [BKMG]. Defaults to 1MB with
+    //     `in_memory` and to 0 with `offloaded`. A positive value is only
+    //     supported with `index_storage_option:in_memory`.
     // ```
     static absl::StatusOr<Options> FromString(absl::string_view text);
 
@@ -125,18 +126,27 @@ class ArrayRecordReaderBase : public riegeli::Object {
 
     // Prefetches the tail of the file to read the postscript and footer in a
     // single read. Only supported with `IndexStorageOption::kInMemory`.
+    //
+    // Defaults to `kDefaultFooterPrefetchBytes` with
+    // `IndexStorageOption::kInMemory` and to 0 with
+    // `IndexStorageOption::kOffloaded`.
     static constexpr uint64_t kDefaultFooterPrefetchBytes = 1 << 20;
     Options& set_footer_prefetch_bytes(uint64_t footer_prefetch_bytes) {
       footer_prefetch_bytes_ = footer_prefetch_bytes;
       return *this;
     }
-    uint64_t footer_prefetch_bytes() const { return footer_prefetch_bytes_; }
+    uint64_t footer_prefetch_bytes() const {
+      if (footer_prefetch_bytes_.has_value()) return *footer_prefetch_bytes_;
+      return index_storage_option_ == IndexStorageOption::kOffloaded
+                 ? 0
+                 : kDefaultFooterPrefetchBytes;
+    }
 
    private:
     std::optional<uint32_t> max_parallelism_ = std::nullopt;
     uint64_t readahead_buffer_size_ = kDefaultReadaheadBufferSize;
     IndexStorageOption index_storage_option_ = IndexStorageOption::kInMemory;
-    uint64_t footer_prefetch_bytes_ = kDefaultFooterPrefetchBytes;
+    std::optional<uint64_t> footer_prefetch_bytes_ = std::nullopt;
   };
 
   // Reads the entire file in parallel and invokes the callback function of

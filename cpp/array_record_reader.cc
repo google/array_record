@@ -179,17 +179,24 @@ ArrayRecordReaderBase::Options::FromString(absl::string_view text) {
                          {"in_memory", IndexStorageOption::kInMemory},
                          {"offloaded", IndexStorageOption::kOffloaded}},
                         &options.index_storage_option_));
-  // Footer prefetch bytes
+  // Footer prefetch bytes. `auto` and an absent option select the default for
+  // the index storage option.
+  constexpr uint64_t kUnsetFooterPrefetchBytes =
+      std::numeric_limits<uint64_t>::max();
+  uint64_t footer_prefetch_bytes = kUnsetFooterPrefetchBytes;
   options_parser.AddOption(
       "footer_prefetch_bytes",
       ValueParser::Or(
-          ValueParser::Enum({{"auto", kDefaultFooterPrefetchBytes}},
+          ValueParser::Enum({{"auto", std::nullopt}},
                             &options.footer_prefetch_bytes_),
           ValueParser::Bytes(/*min_value=*/0,
                              /*max_value=*/1024 * 1024 * 1024,
-                             &options.footer_prefetch_bytes_)));
+                             &footer_prefetch_bytes)));
   if (!options_parser.FromString(text)) {
     return options_parser.status();
+  }
+  if (footer_prefetch_bytes != kUnsetFooterPrefetchBytes) {
+    options.set_footer_prefetch_bytes(footer_prefetch_bytes);
   }
   if (options.index_storage_option() == IndexStorageOption::kOffloaded &&
       options.footer_prefetch_bytes() > 0) {
