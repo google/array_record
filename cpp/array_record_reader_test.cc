@@ -667,6 +667,132 @@ TEST(ArrayRecordReaderTest,
   ASSERT_TRUE(reader.Close());
 }
 
+// Serves `data` from memory. Readers created by NewReader() count themselves
+// and the bytes they hand out in `stats`.
+class NewReaderCountingReader : public riegeli::Reader {
+ public:
+  struct Stats {
+    int new_reader_count = 0;
+    uint64_t new_reader_bytes = 0;
+  };
+
+  NewReaderCountingReader(absl::string_view data, Stats* stats,
+                          bool count_bytes = false)
+      : data_(data), stats_(stats), count_bytes_(count_bytes) {}
+
+  bool SupportsRandomAccess() override { return true; }
+  bool SupportsNewReader() override { return true; }
+
+ protected:
+  bool PullSlow(size_t min_length, size_t recommended_length) override {
+    const riegeli::Position start = pos();
+    const size_t remaining = data_.size() - start;
+    if (min_length > remaining) {
+      return false;
+    }
+    const size_t length =
+        std::min(remaining, std::max(min_length, recommended_length));
+    if (count_bytes_) {
+      stats_->new_reader_bytes += start + length - limit_pos();
+    }
+    set_buffer(data_.data() + start, length);
+    set_limit_pos(start + length);
+    return true;
+  }
+
+  bool SeekSlow(riegeli::Position new_pos) override {
+    if (new_pos > data_.size()) {
+      return false;
+    }
+    set_buffer();
+    set_limit_pos(new_pos);
+    return true;
+  }
+
+  std::optional<riegeli::Position> SizeImpl() override { return data_.size(); }
+
+  std::unique_ptr<riegeli::Reader> NewReaderImpl(
+      riegeli::Position initial_pos) override {
+    ++stats_->new_reader_count;
+    auto reader = std::make_unique<NewReaderCountingReader>(
+        data_, stats_, /*count_bytes=*/true);
+    reader->Seek(initial_pos);
+    return reader;
+  }
+
+ private:
+  absl::string_view data_;
+  Stats* stats_;
+  bool count_bytes_;
+};
+
+TEST(ArrayRecordReaderTest, ReadRecordsWithIndicesCoalescesChunksPastBuffer) {
+  // One record per chunk, so the chunks of records 30-32 start about 2.2 MiB
+  // into the file, past the 1 MiB readahead buffer.
+  constexpr int kNumRecords = 40;
+  constexpr size_t kRecordSize = 75 << 10;
+  std::string encoded;
+  auto writer_options =
+      ArrayRecordWriterBase::Options().set_group_size(1).set_uncompressed();
+  auto writer = ArrayRecordWriter(
+      riegeli::Maker<riegeli::StringWriter>(&encoded), writer_options, nullptr);
+  for (int i = 0; i < kNumRecords; ++i) {
+    ASSERT_TRUE(writer.WriteRecord(std::string(kRecordSize, 'a' + i % 26)));
+  }
+  ASSERT_TRUE(writer.Close());
+
+  // Reads `indices` with the given readahead and returns what the reads of
+  // the requested chunks cost.
+  auto read = [&](const std::vector<uint64_t>& indices,
+                  uint64_t readahead_buffer_size) {
+    NewReaderCountingReader::Stats stats;
+    auto reader = ArrayRecordReader(
+        riegeli::Maker<NewReaderCountingReader>(encoded, &stats),
+        ArrayRecordReaderBase::Options().set_readahead_buffer_size(
+            readahead_buffer_size),
+        nullptr);
+    EXPECT_TRUE(reader.status().ok()) << reader.status().message();
+    // Only count the reads of the requested chunks.
+    stats = NewReaderCountingReader::Stats();
+    int num_records = 0;
+    EXPECT_TRUE(reader
+                    .ParallelReadRecordsWithIndices(
+                        indices,
+                        [&](uint64_t indices_idx,
+                            absl::string_view record) -> absl::Status {
+                          EXPECT_EQ(
+                              record,
+                              std::string(kRecordSize,
+                                          'a' + indices[indices_idx] % 26));
+                          ++num_records;
+                          return absl::OkStatus();
+                        })
+                    .ok());
+    EXPECT_EQ(num_records, indices.size());
+    return stats;
+  };
+  constexpr uint64_t kReadahead = 1 << 20;
+
+  // Adjacent chunks past the first `kReadahead` bytes share one read and read
+  // the same bytes as two separate reads.
+  const auto adjacent = read({30, 31}, kReadahead);
+  const auto adjacent_unbuffered = read({30, 31}, 0);
+  EXPECT_EQ(adjacent.new_reader_count, 1);
+  EXPECT_EQ(adjacent_unbuffered.new_reader_count, 2);
+  EXPECT_EQ(adjacent.new_reader_bytes, adjacent_unbuffered.new_reader_bytes);
+
+  // Chunks with a gap share one read, which also reads the chunk in between.
+  const auto gap = read({30, 32}, kReadahead);
+  const auto gap_unbuffered = read({30, 32}, 0);
+  EXPECT_EQ(gap.new_reader_count, 1);
+  EXPECT_EQ(gap_unbuffered.new_reader_count, 2);
+  EXPECT_GT(gap.new_reader_bytes, gap_unbuffered.new_reader_bytes);
+  EXPECT_LT(gap.new_reader_bytes, adjacent.new_reader_bytes * 2);
+
+  // Chunks further apart than `kReadahead` are still read separately.
+  EXPECT_EQ(read({5, 30}, kReadahead).new_reader_count, 2);
+}
+
 TEST(ArrayRecordReaderTest, OffloadedIndexWithPositiveFooterPrefetchFails) {
   std::string encoded;
   auto writer_options =
