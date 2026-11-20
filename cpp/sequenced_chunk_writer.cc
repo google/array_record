@@ -25,10 +25,10 @@ limitations under the License.
 #include "absl/strings/str_format.h"
 #include "absl/synchronization/mutex.h"
 #include "riegeli/base/status.h"
-#include "riegeli/base/types.h"
 #include "riegeli/chunk_encoding/chunk.h"
 #include "riegeli/chunk_encoding/constants.h"
 #include "riegeli/records/chunk_writer.h"
+#include "riegeli/records/record_writer.h"
 
 namespace array_record {
 
@@ -118,8 +118,8 @@ void SequencedChunkWriterBase::TrySubmitFirstFutureChunk(
     return;
   }
   if (pad_to_block_boundary_) {
-    if (!chunk_writer->PadToBlockBoundary())
-    {
+    if (!chunk_writer->WritePadding(
+            riegeli::RecordWriterBase::kImplicitPadding)) {
       Fail(riegeli::Annotate(
           chunk_writer->status(),
           absl::StrFormat("Could not pad boundary for chunk: %d",

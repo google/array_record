@@ -26,7 +26,7 @@ build_and_test_array_record() {
   else
     # Automatically decide which platform to build for by checking on which
     # platform this runs.
-    AUDITWHEEL_PLATFORM='manylinux2014_'"$(uname -m)"
+    AUDITWHEEL_PLATFORM='manylinux_2_28_'"$(uname -m)"
     docker rmi -f array_record:${PYTHON_VERSION}
     docker rm -f array_record
     DOCKER_BUILDKIT=1 docker build --progress=plain --no-cache \

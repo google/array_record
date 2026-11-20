@@ -43,11 +43,11 @@ cc_library(
         "@riegeli//riegeli/base:initializer",
         "@riegeli//riegeli/base:object",
         "@riegeli//riegeli/base:status",
-        "@riegeli//riegeli/base:types",
         "@riegeli//riegeli/bytes:writer",
         "@riegeli//riegeli/chunk_encoding:chunk",
         "@riegeli//riegeli/chunk_encoding:constants",
         "@riegeli//riegeli/records:chunk_writer",
+        "@riegeli//riegeli/records:record_writer",
     ],
 )
 

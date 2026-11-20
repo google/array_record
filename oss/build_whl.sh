@@ -67,10 +67,12 @@ function main() {
   cp LICENSE "${TMPDIR}"
   rsync -avm -L  --exclude="bazel-*/" . "${TMPDIR}/array_record"
   rsync -avm -L  --include="*.so" --include="*_pb2.py" \
-    --exclude="*.runfiles" --exclude="*_obj" --include="*/" --exclude="*" \
+    --exclude="*.runfiles" --exclude="*.venv" --exclude="*_obj" \
+    --include="*/" --exclude="*" \
     bazel-bin/cpp "${TMPDIR}/array_record"
   rsync -avm -L  --include="*.so" --include="*_pb2.py" \
-    --exclude="*.runfiles" --exclude="*_obj" --include="*/" --exclude="*" \
+    --exclude="*.runfiles" --exclude="*.venv" --exclude="*_obj" \
+    --include="*/" --exclude="*" \
     bazel-bin/python "${TMPDIR}/array_record"
 
   pushd ${TMPDIR}

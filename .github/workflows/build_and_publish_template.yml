@@ -28,10 +28,10 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
-        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-14]
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-15]
 
     env:
-      USE_BAZEL_VERSION: "7.4.1"
+      USE_BAZEL_VERSION: "8.8.2"
     steps:
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@4fd964a13a440a8aeb0be47350db2fc640f19ca8 # 0.15.0
@@ -54,7 +54,7 @@ jobs:
           export PYTHON_VERSION=${{ matrix.python-version }}
           export PYTHON_MAJOR_VERSION=$(echo $PYTHON_VERSION | cut -d. -f1)
           export PYTHON_MINOR_VERSION=$(echo $PYTHON_VERSION | cut -d. -f2)
-          export BAZEL_VERSION="7.4.1"
+          export BAZEL_VERSION="8.8.2"
           export OUTPUT_DIR="/tmp/array_record"
           export SOURCE_DIR="/tmp/array_record"
           . "${SOURCE_DIR}"'/oss/runner_common.sh'
@@ -82,7 +82,7 @@ jobs:
           path: dist/
           merge-multiple: true
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           attestations: false
           verbose: true
