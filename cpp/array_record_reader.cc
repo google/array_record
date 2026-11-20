@@ -120,15 +120,21 @@ class ArrayChunkOffset : public ChunkOffset {
 
 class OffloadedChunkOffset : public ChunkOffset {
  public:
+  // `footer_chunk_length` is the distance from `footer_offset` to the end of
+  // the footer chunk, as reported by `riegeli::DefaultChunkReader::pos()`.
   OffloadedChunkOffset(ArrayRecordReaderBase* base_reader,
-                       uint64_t footer_offset, uint64_t num_chunks)
+                       uint64_t footer_offset, uint64_t footer_chunk_length,
+                       uint64_t num_chunks)
       : base_reader_(base_reader),
         footer_offset_(footer_offset),
+        footer_chunk_length_(footer_chunk_length),
         num_chunks_(num_chunks) {}
 
   uint64_t operator[](size_t idx) const override {
     auto backing_reader = base_reader_->get_backing_reader();
-    auto reader = backing_reader->NewReader(footer_offset_);
+    // `riegeli::DefaultChunkReader` reads up to the end of the footer chunk.
+    auto reader =
+        backing_reader->NewReader(footer_offset_, footer_chunk_length_);
     auto chunk_reader = riegeli::DefaultChunkReader<>(reader.get());
     Chunk chunk;
     ChunkDecoder footer_decoder;
@@ -150,6 +156,7 @@ class OffloadedChunkOffset : public ChunkOffset {
  private:
   ArrayRecordReaderBase* base_reader_;
   uint64_t footer_offset_;
+  uint64_t footer_chunk_length_;
   uint64_t num_chunks_;
 };
 
@@ -275,13 +282,17 @@ ArrayRecordReaderBase& ArrayRecordReaderBase::operator=(
 // evaluated variables for random access are all initialized. Therefore it's
 // safe to access the reader from multiple threads later on, even though the
 // methods wasn't const.
-ChunkDecoder ReadChunk(Reader& reader, size_t pos, size_t len) {
+//
+// If `chunk_length` is not `nullptr`, it is set to the distance from `pos` to
+// the end of the chunk read.
+ChunkDecoder ReadChunk(Reader& reader, size_t pos, size_t len,
+                       uint64_t* chunk_length = nullptr) {
   ChunkDecoder decoder;
   if (!reader.ok()) {
     decoder.Fail(reader.status());
     return decoder;
   }
-  MaskedReader masked_reader(reader.NewReader(pos), len);
+  MaskedReader masked_reader(reader.NewReader(pos, len), len);
   if (!masked_reader.ok()) {
     decoder.Fail(masked_reader.status());
     return decoder;
@@ -292,6 +303,7 @@ ChunkDecoder ReadChunk(Reader& reader, size_t pos, size_t len) {
     decoder.Fail(chunk_reader.status());
     return decoder;
   }
+  if (chunk_length != nullptr) *chunk_length = chunk_reader.pos() - pos;
   decoder.Decode(chunk);
   return decoder;
 }
@@ -332,6 +344,7 @@ void ArrayRecordReaderBase::Initialize() {
   AR_ENDO_TASK("Reading ArrayRecord footer");
   RiegeliFooterMetadata footer_metadata;
   ChunkDecoder footer_decoder;
+  uint64_t footer_chunk_length = 0;
   {
     AR_ENDO_SCOPE("Reading postscript and footer chunk");
     if (!reader->SupportsRandomAccess()) {
@@ -390,7 +403,8 @@ void ArrayRecordReaderBase::Initialize() {
         ReadChunk((prefetch_length > 0 && footer_offset >= prefetch_offset)
                       ? prefetched_reader
                       : *reader,
-                  footer_offset, size - kRiegeliBlockSize - footer_offset);
+                  footer_offset, size - kRiegeliBlockSize - footer_offset,
+                  &footer_chunk_length);
 
     if (!footer_decoder.ReadRecord(footer_metadata)) {
       Fail(Annotate(footer_decoder.status(),
@@ -446,7 +460,7 @@ void ArrayRecordReaderBase::Initialize() {
       } break;
       case Options::IndexStorageOption::kOffloaded:
         state_->chunk_offsets = std::make_unique<OffloadedChunkOffset>(
-            this, state_->footer_offset, num_chunks);
+            this, state_->footer_offset, footer_chunk_length, num_chunks);
         break;
     }
 
@@ -511,7 +525,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecords(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start]),
+              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start],
+                                buf_len),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
@@ -590,7 +605,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsInRange(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start]),
+              reader->NewReader((*state_->chunk_offsets)[chunk_idx_start],
+                                buf_len),
               buf_len);
         }
         for (uint64_t chunk_idx = chunk_idx_start; chunk_idx <= last_chunk_idx;
@@ -712,7 +728,8 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
         {
           AR_ENDO_SCOPE("MaskedReader");
           masked_reader = MaskedReader(
-              reader->NewReader((*state_->chunk_offsets)[buffer_chunks[0]]),
+              reader->NewReader((*state_->chunk_offsets)[buffer_chunks[0]],
+                                buf_len),
               buf_len);
         }
         for (auto chunk_idx : buffer_chunks) {
@@ -892,8 +909,8 @@ bool ArrayRecordReaderBase::ReadAheadFromBuffer(uint64_t buffer_idx) {
       MaskedReader masked_reader(riegeli::kClosed);
       {
         AR_ENDO_SCOPE("MaskedReader");
-        masked_reader =
-            MaskedReader(reader->NewReader(chunk_offsets.front()), buffer_len);
+        masked_reader = MaskedReader(
+            reader->NewReader(chunk_offsets.front(), buffer_len), buffer_len);
       }
       if (!masked_reader.ok()) {
         for (auto& decoder : decoders) {
