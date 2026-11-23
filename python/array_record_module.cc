@@ -175,8 +175,10 @@ PYBIND11_MODULE(array_record_module, m) {
            index_storage_option ::= `in_memory` or `offloaded`. Defaults to
              `in_memory`.
            footer_prefetch_bytes ::= `auto` or non-negative integer expressed as
-             real with optional suffix [BkKMGTPE]. Defaults to 1MB. Only
-             supported with `index_storage_option:in_memory`.
+             real with optional suffix [BkKMGTPE]. Defaults to 1MB when
+             `index_storage_option` is `in_memory`, and 0 when `offloaded`.
+             Values > 0 are only supported with
+             `index_storage_option:in_memory`.
 
            The default option is optimized for sequential access. To optimize
            the random access performance, set the options to
