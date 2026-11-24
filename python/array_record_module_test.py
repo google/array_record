@@ -305,7 +305,8 @@ class ArrayRecordModuleTest(absltest.TestCase):
       self.assertEqual(mock_gcs.aborted_streams, 0)
 
       # Verify record payload reading works over gs:// and reuses the same
-      # TCP connection within the ArrayRecordReader instance.
+      # TCP connection within the ArrayRecordReader instance. The records are
+      # less than 1 MiB apart, so they are read with one range read.
       mock_gcs.requests.clear()
       conns_before = mock_gcs.tcp_connections
       reader = ArrayRecordReader(
@@ -314,7 +315,7 @@ class ArrayRecordModuleTest(absltest.TestCase):
           file_reader_buffer_size=32768,
       )
       self.assertEqual(
-          reader.read([0, 17, 35]), [records[0], records[17], records[35]]
+          reader.read([0, 7, 15]), [records[0], records[7], records[15]]
       )
       reader.close()
       self.assertEqual(mock_gcs.tcp_connections - conns_before, 1)
@@ -359,13 +360,14 @@ class ArrayRecordModuleTest(absltest.TestCase):
         f"http://127.0.0.1:{mock_gcs.port}"
     )
     try:
+      # Records 0-15 span less than 1 MiB, so each batch is one range read.
       def worker(idx: int):
         reader = ArrayRecordReader(
             f"gs://test-bucket/shard-{idx:05d}",
             "readahead_buffer_size:16M,max_parallelism:1",
         )
         self.assertLen(records, reader.num_records())
-        fetched = reader.read([0, idx % len(records), len(records) - 1])
+        fetched = reader.read([0, idx % 16, 15])
         reader.close()
         return fetched
 
@@ -375,8 +377,9 @@ class ArrayRecordModuleTest(absltest.TestCase):
       for idx, fetched in enumerate(results):
         self.assertEqual(
             fetched,
-            [records[0], records[idx % len(records)], records[-1]],
+            [records[0], records[idx % 16], records[15]],
         )
+      # One footer read and one range read per reader.
       self.assertLen(mock_gcs.requests, 64)
     finally:
       if old_endpoint is None:

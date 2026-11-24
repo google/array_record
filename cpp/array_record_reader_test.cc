@@ -1201,6 +1201,103 @@ TEST_F(ChunkLengthDeclarationTest, ChunkGroupsDeclareCombinedRanges) {
   EXPECT_TRUE(reader.Close()) << reader.status();
 }
 
+TEST(ChunkLengthDeclarationLargeTest,
+     ParallelReadRecordsWithIndicesGroupsNearbyChunks) {
+  // Each record is in its own chunk of about 75 KiB, so chunk 30 starts about
+  // 2.2 MiB into the file.
+  constexpr int kNumRecords = 40;
+  auto record = [](uint64_t i) {
+    return std::string(75 << 10, static_cast<char>('a' + i % 26));
+  };
+  std::string encoded;
+  {
+    auto writer = ArrayRecordWriter(
+        riegeli::Maker<riegeli::StringWriter>(&encoded),
+        ArrayRecordWriterBase::Options().set_group_size(1).set_uncompressed(),
+        nullptr);
+    for (int i = 0; i < kNumRecords; ++i) {
+      ASSERT_TRUE(writer.WriteRecord(record(i)));
+    }
+    ASSERT_TRUE(writer.Close());
+  }
+  using Hint = HintLog::Hint;
+  std::vector<Hint> chunks;
+  {
+    auto reference =
+        ArrayRecordReader(riegeli::Maker<riegeli::StringReader>(encoded),
+                          ArrayRecordReaderBase::Options(), nullptr);
+    ASSERT_TRUE(reference.ok()) << reference.status();
+    for (int i = 0; i < kNumRecords; ++i) {
+      chunks.emplace_back(
+          reference.ChunkStartOffset(i),
+          reference.ChunkEndOffset(i) - reference.ChunkStartOffset(i));
+    }
+    ASSERT_TRUE(reference.Close()) << reference.status();
+  }
+  // The range from the start of chunk `first` to the end of chunk `last`.
+  auto span = [&](size_t first, size_t last) {
+    return Hint(chunks[first].first,
+                chunks[last].first + chunks[last].second - chunks[first].first);
+  };
+  // The unrequested bytes between chunks `first` and `last`.
+  auto gap = [&](size_t first, size_t last) {
+    return chunks[last].first - (chunks[first].first + chunks[first].second);
+  };
+  // Reads `indices` and returns the ranges read for them.
+  auto reads = [&](const std::vector<uint64_t>& indices,
+                   uint64_t readahead_buffer_size, ARThreadPool* pool) {
+    HintLog log;
+    auto reader = ArrayRecordReader(
+        riegeli::Maker<LengthHintRecordingReader>(encoded, &log),
+        ArrayRecordReaderBase::Options().set_readahead_buffer_size(
+            readahead_buffer_size),
+        pool);
+    EXPECT_TRUE(reader.ok()) << reader.status();
+    log.Take();
+    EXPECT_TRUE(reader
+                    .ParallelReadRecordsWithIndices(
+                        indices,
+                        [&](uint64_t indices_index, absl::string_view data) {
+                          EXPECT_EQ(data, record(indices[indices_index]));
+                          return absl::OkStatus();
+                        })
+                    .ok());
+    std::vector<Hint> hints = log.Take();
+    EXPECT_TRUE(reader.Close()) << reader.status();
+    return hints;
+  };
+
+  const uint64_t two_chunks =
+      std::max(span(30, 31).second, span(31, 32).second);
+  constexpr uint64_t kOneMiB = uint64_t{1} << 20;
+  ASSERT_LE(gap(0, 10), kOneMiB);
+  ASSERT_GT(gap(0, 20), kOneMiB);
+  for (ARThreadPool* pool :
+       {static_cast<ARThreadPool*>(nullptr), ArrayRecordGlobalPool()}) {
+    SCOPED_TRACE(absl::StrCat("pool: ", pool != nullptr));
+    // Without readahead, each chunk is read on its own.
+    EXPECT_THAT(reads({31, 30}, 0, pool),
+                testing::UnorderedElementsAre(chunks[30], chunks[31]));
+    // A buffer spans at most the readahead, like the chunk groups built in
+    // Initialize(), anywhere in the file.
+    EXPECT_THAT(reads({31, 30}, span(30, 31).second, pool),
+                testing::ElementsAre(span(30, 31)));
+    EXPECT_THAT(reads({31, 30}, span(30, 31).second - 1, pool),
+                testing::UnorderedElementsAre(chunks[30], chunks[31]));
+    // The span is measured from the start of the open buffer.
+    EXPECT_THAT(reads({30, 31, 32}, two_chunks, pool),
+                testing::UnorderedElementsAre(span(30, 31), chunks[32]));
+    EXPECT_THAT(reads({5, 30, 31}, kOneMiB, pool),
+                testing::UnorderedElementsAre(chunks[5], span(30, 31)));
+    // Requested chunks share a read only if at most 1 MiB of unrequested
+    // chunks separate them, even if a larger readahead would fit both.
+    EXPECT_THAT(reads({10, 0}, 4 * kOneMiB, pool),
+                testing::ElementsAre(span(0, 10)));
+    EXPECT_THAT(reads({20, 0}, 4 * kOneMiB, pool),
+                testing::UnorderedElementsAre(chunks[0], chunks[20]));
+  }
+}
+
 TEST(ChunkLengthDeclarationLargeTest, ChunksSpanningBlockBoundaries) {
   std::string encoded;
   const std::string large_record(100000, 'x');

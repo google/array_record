@@ -62,6 +62,11 @@ constexpr uint32_t kArrayRecordV1 = 1;
 // Magic number for ArrayRecord
 constexpr uint64_t kMagic = 0x71930e704fdae05eULL;
 
+// ParallelReadRecordsWithIndices() reads two requested chunks with one
+// NewReader() only if at most this many bytes of unrequested chunks separate
+// them, so that sparse indices do not read the unrequested chunks in between.
+constexpr uint64_t kMaxUnrequestedBytesInBuffer = uint64_t{1} << 20;
+
 using riegeli::Annotate;
 using riegeli::Chunk;
 using riegeli::ChunkDecoder;
@@ -733,27 +738,31 @@ absl::Status ArrayRecordReaderBase::ParallelReadRecordsWithIndices(
     // Index in `chunk_refs` of the first chunk of the buffer.
     size_t buf_begin_cidx;
   };
-  // Buffer `b` holds `chunk_refs[buf_refs[b].buf_begin_cidx,
+  // Requested chunks are grouped into buffers which are read with one
+  // NewReader(). Buffer `b` holds `chunk_refs[buf_refs[b].buf_begin_cidx,
   // buf_refs[b + 1].buf_begin_cidx)`. The last element is a sentinel which
-  // ends the last buffer. Same grouping rule as before, applied to the
-  // requested chunks only.
+  // ends the last buffer. A chunk joins the open buffer if the buffer then
+  // spans at most `readahead_buffer_size` bytes, as the chunk groups built in
+  // Initialize() do, and if at most kMaxUnrequestedBytesInBuffer bytes
+  // separate it from the previous requested chunk.
   std::vector<BufVarLenRef> buf_refs;
   buf_refs.reserve(num_requested_chunks + 1);
   buf_refs.push_back({0});
+  // Offset of the open buffer.
+  uint64_t buf_start_offset = (*state_->chunk_offsets)[chunk_refs[0].chunk_idx];
+  // End offset of the last chunk in the open buffer.
+  uint64_t buf_end_offset = state_->ChunkEndOffset(chunk_refs[0].chunk_idx);
   for (size_t k = 1; k < num_requested_chunks; ++k) {
     const uint64_t i = chunk_refs[k].chunk_idx;
-    // TODO(yonghuili): This subtracts a chunk index from a byte offset, so
-    // `buf_size` is about the absolute end offset of chunk `i`, and chunks
-    // past the first `readahead_buffer_size` bytes of the file never share a
-    // buffer. The buffer size is
-    // `ChunkEndOffset(i) - (*state_->chunk_offsets)[first chunk]`. Fixing it
-    // changes reads (e.g. for F1, which sets the readahead from its memory
-    // budget), so it needs its own change.
-    uint64_t buf_size = state_->ChunkEndOffset(i) -
-                        chunk_refs[buf_refs.back().buf_begin_cidx].chunk_idx;
-    if (buf_size >= state_->options.readahead_buffer_size()) {
+    const uint64_t chunk_start = (*state_->chunk_offsets)[i];
+    const uint64_t chunk_end = state_->ChunkEndOffset(i);
+    if (chunk_end - buf_start_offset >
+            state_->options.readahead_buffer_size() ||
+        chunk_start - buf_end_offset > kMaxUnrequestedBytesInBuffer) {
       buf_refs.push_back({k});
+      buf_start_offset = chunk_start;
     }
+    buf_end_offset = chunk_end;
   }
   const size_t num_buffers = buf_refs.size();
   buf_refs.push_back({num_requested_chunks});
