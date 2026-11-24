@@ -162,10 +162,14 @@ class _ReadInstruction:
 
 def _get_read_instructions(
     paths: Sequence[PathLikeOrFileInstruction],
+    readers: list[Any] | None = None,
+    reader_options_string: str = "",
 ) -> Sequence[_ReadInstruction]:
   """Constructs ReadInstructions for given paths."""
 
-  def get_read_instruction(path: PathLikeOrFileInstruction) -> _ReadInstruction:
+  def get_read_instruction(
+      idx: int, path: PathLikeOrFileInstruction
+  ) -> _ReadInstruction:
     if isinstance(path, FileInstruction):
       start = path.skip
       end = path.skip + path.take
@@ -176,17 +180,25 @@ def _get_read_instructions(
       end = int(m.group(3))
     else:
       path = os.fspath(path)
-      reader = array_record_module.ArrayRecordReader(path)
+      if readers is not None and path.startswith("gs://"):
+        reader = _create_reader(path, reader_options_string)
+        _check_group_size(path, reader)
+        readers[idx] = reader
+        end = reader.num_records()
+      else:
+        reader = array_record_module.ArrayRecordReader(path)
+        end = reader.num_records()
+        reader.close()
       start = 0  # Using whole file.
-      end = reader.num_records()
-      reader.close()
     return _ReadInstruction(path, start, end)
 
   num_threads = _get_flag_value(_GRAIN_NUM_THREADS_COMPUTING_NUM_RECORDS)
   num_workers = min(len(paths), num_threads)
   return _run_in_parallel(
       function=get_read_instruction,
-      list_of_kwargs_to_function=[{"path": path} for path in paths],
+      list_of_kwargs_to_function=[
+          {"idx": idx, "path": path} for idx, path in enumerate(paths)
+      ],
       num_workers=num_workers,
   )
 
@@ -286,10 +298,19 @@ class ArrayRecordDataSource:
       self._reader_options_string = ",".join(
           [f"{k}:{v}" for k, v in reader_options.items()]
       )
-    self._read_instructions = _get_read_instructions(paths)
+    # We open readers lazily when we need to read from them, except for gs://
+    # paths opened during _get_read_instructions.
+    self._readers: List[Any] = [None] * len(paths)
+    try:
+      self._read_instructions = _get_read_instructions(
+          paths, self._readers, self._reader_options_string
+      )
+    except Exception:
+      for reader in self._readers:
+        if reader is not None:
+          reader.close()
+      raise
     self._paths = [ri.filename for ri in self._read_instructions]
-    # We open readers lazily when we need to read from them.
-    self._readers: List[Any] = [None] * len(self._read_instructions)
     self._lock = threading.Lock()
     self._num_records = sum(
         map(lambda x: x.num_records, self._read_instructions)
