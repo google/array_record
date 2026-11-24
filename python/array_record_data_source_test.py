@@ -261,6 +261,101 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
     ])
     self.assertRegex(repr(ar), r"ArrayRecordDataSource\(hash_of_paths=[\w]+\)")
 
+  def _patch_gcs_reader(self, failing_shard: str | None = None):
+    """Serves gs://test-bucket/<name> from testdata/<name> and logs opens.
+
+    Args:
+      failing_shard: A gs:// path whose open raises RuntimeError.
+
+    Returns:
+      The patcher and a list of (path, options, reader) for each open.
+    """
+    real_reader = array_record_module.ArrayRecordReader
+    opened = []
+
+    def open_reader(path, options="", **kwargs):
+      path = os.fspath(path)
+      if path == failing_shard:
+        raise RuntimeError(f"cannot open {path}")
+      local_path = self.testdata_dir / path.removeprefix("gs://test-bucket/")
+      reader = mock.MagicMock(
+          wraps=real_reader(os.fspath(local_path), options=options, **kwargs)
+      )
+      opened.append((path, options, reader))
+      return reader
+
+    patcher = mock.patch.object(
+        array_record_module, "ArrayRecordReader", side_effect=open_reader
+    )
+    return patcher, opened
+
+  @flagsaver.flagsaver(grain_reuse_gcs_readers=True)
+  def test_gcs_shards_are_opened_once(self):
+    shards = [
+        "gs://test-bucket/digits.array_record-00000-of-00002",
+        "gs://test-bucket/digits.array_record-00001-of-00002",
+    ]
+    patcher, opened = self._patch_gcs_reader()
+    with patcher:
+      with array_record_data_source.ArrayRecordDataSource(
+          shards, reader_options={"index_storage_option": "in_memory"}
+      ) as ar:
+        self.assertEqual(ar[0], b"0")
+        self.assertEqual(ar.__getitems__([1, 6, 9]), [b"1", b"6", b"9"])
+      self.assertCountEqual([path for path, _, _ in opened], shards)
+      for _, options, reader in opened:
+        self.assertEqual(
+            options, "readahead_buffer_size:0,index_storage_option:in_memory"
+        )
+        reader.close.assert_called_once()
+
+  def test_gcs_shards_are_reopened_by_default(self):
+    shards = [
+        "gs://test-bucket/digits.array_record-00000-of-00002",
+        "gs://test-bucket/digits.array_record-00001-of-00002",
+    ]
+    patcher, opened = self._patch_gcs_reader()
+    with patcher:
+      with array_record_data_source.ArrayRecordDataSource(shards) as ar:
+        self.assertEqual(ar._readers, [None, None])
+        self.assertEqual(ar[0], b"0")
+    # Counting opens both shards, then the read opens shard 0 again.
+    self.assertCountEqual([path for path, _, _ in opened], shards + shards[:1])
+    for _, _, reader in opened:
+      reader.close.assert_called_once()
+
+  @flagsaver.flagsaver(
+      grain_reuse_gcs_readers=True, grain_num_threads_computing_num_records=1
+  )
+  def test_gcs_readers_are_closed_when_init_fails(self):
+    shards = [
+        "gs://test-bucket/digits.array_record-00000-of-00002",
+        "gs://test-bucket/digits.array_record-00001-of-00002",
+    ]
+    patcher, opened = self._patch_gcs_reader(failing_shard=shards[1])
+    with patcher, self.assertRaisesRegex(RuntimeError, "cannot open"):
+      array_record_data_source.ArrayRecordDataSource(shards)
+    self.assertLen(opened, 1)
+    opened[0][2].close.assert_called_once()
+
+  def test_get_read_instructions_without_readers_closes_gcs_readers(self):
+    shard = "gs://test-bucket/digits.array_record-00000-of-00002"
+    patcher, opened = self._patch_gcs_reader()
+    with patcher:
+      instructions = array_record_data_source._get_read_instructions([shard])
+    self.assertEqual(instructions[0].num_records, 5)
+    opened[0][2].close.assert_called_once()
+
+  def test_local_shards_open_on_first_read(self):
+    with array_record_data_source.ArrayRecordDataSource([
+        self.testdata_dir / "digits.array_record-00000-of-00002",
+        self.testdata_dir / "digits.array_record-00001-of-00002",
+    ]) as ar:
+      self.assertEqual(ar._readers, [None, None])
+      self.assertEqual(ar[0], b"0")
+      self.assertIsNotNone(ar._readers[0])
+      self.assertIsNone(ar._readers[1])
+
 
 class RunInParallelTest(parameterized.TestCase):
 
