@@ -319,25 +319,48 @@ class ArrayRecordModuleTest(absltest.TestCase):
       )
       reader.close()
       self.assertEqual(mock_gcs.tcp_connections - conns_before, 1)
+    finally:
+      if old_endpoint is None:
+        os.environ.pop("CLOUD_STORAGE_EMULATOR_ENDPOINT", None)
+      else:
+        os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = old_endpoint
+      mock_gcs.close()
 
-      # Opening with index_storage_option:offloaded defaults
-      # footer_prefetch_bytes to 0 and skips tail prefetching.
-      mock_gcs.requests.clear()
-      reader = ArrayRecordReader(
-          "gs://test-bucket/shard-00000-of-00001",
-          "index_storage_option:offloaded,"
-          "readahead_buffer_size:0,max_parallelism:0",
-          file_reader_buffer_size=32768,
-      )
-      self.assertEqual(reader.num_records(), num_records)
-      self.assertEqual(reader.read([17]), [records[17]])
-      reader.close()
-      self.assertTrue(
-          all(
-              not (r["range"] or "").startswith("bytes=-")
-              for r in mock_gcs.requests
+  def test_gcs_open_without_footer_prefetch_sends_only_range_requests(self):
+    writer = ArrayRecordWriter(self.test_file, "group_size:1,uncompressed")
+    records = [f"record-{i:04d}-".encode() + (b"x" * 65536) for i in range(36)]
+    for r in records:
+      writer.write(r)
+    writer.close()
+    with open(self.test_file, "rb") as f:
+      payload = f.read()
+
+    mock_gcs = _MockGcsServer(payload)
+    old_endpoint = os.environ.get("CLOUD_STORAGE_EMULATOR_ENDPOINT")
+    os.environ["CLOUD_STORAGE_EMULATOR_ENDPOINT"] = (
+        f"http://127.0.0.1:{mock_gcs.port}"
+    )
+    try:
+      # footer_prefetch_bytes is 0 by default with
+      # index_storage_option:offloaded.
+      for options in (
+          "index_storage_option:offloaded",
+          "footer_prefetch_bytes:0",
+      ):
+        with self.subTest(options=options):
+          mock_gcs.requests.clear()
+          reader = ArrayRecordReader(
+              "gs://test-bucket/shard-00000-of-00001",
+              f"{options},readahead_buffer_size:0,max_parallelism:0",
+              file_reader_buffer_size=32768,
           )
-      )
+          self.assertLen(records, reader.num_records())
+          self.assertEqual(reader.read([17]), [records[17]])
+          reader.close()
+          ranges = [r["range"] for r in mock_gcs.requests]
+          # A request without a Range header downloads the whole object.
+          self.assertNotIn(None, ranges, msg=f"ranges={ranges}")
+          self.assertEqual(ranges[0], "bytes=-1")
     finally:
       if old_endpoint is None:
         os.environ.pop("CLOUD_STORAGE_EMULATOR_ENDPOINT", None)
