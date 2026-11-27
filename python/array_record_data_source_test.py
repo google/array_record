@@ -18,6 +18,7 @@ import dataclasses
 import os
 import pathlib
 import pickle
+import threading
 from unittest import mock
 
 from absl import flags
@@ -260,6 +261,35 @@ class ArrayRecordDataSourcesTest(absltest.TestCase):
         self.testdata_dir / "digits.array_record-00001-of-00002",
     ])
     self.assertRegex(repr(ar), r"ArrayRecordDataSource\(hash_of_paths=[\w]+\)")
+
+  def test_first_reads_of_different_shards_do_not_wait_for_each_other(self):
+    ar = array_record_data_source.ArrayRecordDataSource([
+        self.testdata_dir / "digits.array_record-00000-of-00002",
+        self.testdata_dir / "digits.array_record-00001-of-00002",
+    ])
+    real_create_reader = array_record_data_source._create_reader
+    shard_0_opening = threading.Event()
+    release_shard_0 = threading.Event()
+
+    def create_reader(filename, additional_reader_options):
+      if os.fspath(filename).endswith("00000-of-00002"):
+        shard_0_opening.set()
+        release_shard_0.wait()
+      return real_create_reader(filename, additional_reader_options)
+
+    with mock.patch.object(
+        array_record_data_source, "_create_reader", side_effect=create_reader
+    ), futures.ThreadPoolExecutor(max_workers=2) as executor:
+      read_shard_0 = executor.submit(lambda: ar[0])
+      try:
+        self.assertTrue(shard_0_opening.wait(timeout=10))
+        # Shard 1 opens and reads while shard 0 is still opening.
+        self.assertEqual(
+            executor.submit(lambda: ar[5]).result(timeout=10), b"5"
+        )
+      finally:
+        release_shard_0.set()
+      self.assertEqual(read_shard_0.result(timeout=10), b"0")
 
 
 class RunInParallelTest(parameterized.TestCase):
