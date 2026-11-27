@@ -20,7 +20,13 @@ function main() {
   write_to_bazelrc "build --enable_platform_specific_config"
   write_to_bazelrc "build --@rules_python//python/config_settings:python_version=${PYTHON_VERSION}"
   write_to_bazelrc "test --@rules_python//python/config_settings:python_version=${PYTHON_VERSION}"
-  write_to_bazelrc "test --action_env PYTHON_VERSION=${PYTHON_VERSION}"
+  write_to_bazelrc "build --action_env PYTHON_VERSION=${PYTHON_VERSION}"
+  # Set every --action_env here, for both build and test. A flag passed only to
+  # `bazel build` makes `bazel test` discard the analysis cache.
+  write_to_bazelrc "build --action_env MACOSX_DEPLOYMENT_TARGET=11.0"
+  write_to_bazelrc "build --action_env PYTHON_BIN_PATH=${PYTHON_BIN}"
+  # The shared gRPC client turns off gRPC metrics export, so don't build it.
+  write_to_bazelrc "build --@google_cloud_cpp//google/cloud/storage:enable_grpc_metrics=False"
   write_to_bazelrc "test --test_timeout=300"
 
   write_to_bazelrc "build -c opt"
@@ -46,8 +52,8 @@ function main() {
 
   export USE_BAZEL_VERSION="${BAZEL_VERSION}"
   bazel clean
-  bazel build ... --action_env MACOSX_DEPLOYMENT_TARGET='11.0' --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
-  bazel test --verbose_failures --test_output=errors ... --action_env PYTHON_BIN_PATH="${PYTHON_BIN}"
+  bazel build ...
+  bazel test --verbose_failures --test_output=errors ...
 
   DEST="/tmp/array_record/all_dist"
   # Create the directory, then do dirname on a non-existent file inside it to
