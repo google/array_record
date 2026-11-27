@@ -288,9 +288,10 @@ class ArrayRecordDataSource:
       )
     self._read_instructions = _get_read_instructions(paths)
     self._paths = [ri.filename for ri in self._read_instructions]
-    # We open readers lazily when we need to read from them.
+    # We open readers lazily when we need to read from them. Each shard has its
+    # own lock, so first reads of different shards open them in parallel.
     self._readers: List[Any] = [None] * len(self._read_instructions)
-    self._lock = threading.Lock()
+    self._reader_locks = [threading.Lock() for _ in self._read_instructions]
     self._num_records = sum(
         map(lambda x: x.num_records, self._read_instructions)
     )
@@ -352,7 +353,7 @@ class ArrayRecordDataSource:
     """Threadsafe method to create corresponding reader if it doesn't exist."""
     if self._readers[reader_idx] is not None:
       return
-    with self._lock:
+    with self._reader_locks[reader_idx]:
       if self._readers[reader_idx] is not None:
         return
       filename = self._read_instructions[reader_idx].filename
@@ -414,7 +415,7 @@ class ArrayRecordDataSource:
     logging.debug("__getstate__ for ArrayRecordDataSource is called.")
     state = self.__dict__.copy()
     del state["_readers"]
-    del state["_lock"]
+    del state["_reader_locks"]
     return state
 
   def __setstate__(self, state):
@@ -423,7 +424,7 @@ class ArrayRecordDataSource:
     # We open readers lazily when we need to read from them. Thus, we don't
     # need to re-open the same files as before pickling.
     self._readers = [None] * len(self._read_instructions)
-    self._lock = threading.Lock()
+    self._reader_locks = [threading.Lock() for _ in self._read_instructions]
 
   def __repr__(self) -> str:
     """Storing a hash of paths since paths can be a very long list."""
