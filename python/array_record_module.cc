@@ -128,14 +128,16 @@ PYBIND11_MODULE(array_record_module, m) {
              if (absl::StartsWith(path, "gs://")) {
                const auto footer_prefetch_bytes =
                    status_or_option->footer_prefetch_bytes();
+               // The first request also gets the object size. Without a range
+               // it would download the whole object, so with
+               // footer_prefetch_bytes 0 it reads only the last byte.
                return new array_record::ArrayRecordReader(
                    riegeli::Maker<riegeli::GcsReader>(
-                       MakeGcsClient(),
-                       riegeli::GcsObject(path), std::move(gcs_reader_options),
-                       footer_prefetch_bytes > 0
-                           ? google::cloud::storage::ReadLast(
-                                 footer_prefetch_bytes)
-                           : google::cloud::storage::ReadLast()),
+                       MakeGcsClient(), riegeli::GcsObject(path),
+                       std::move(gcs_reader_options),
+                       google::cloud::storage::ReadLast(
+                           footer_prefetch_bytes > 0 ? footer_prefetch_bytes
+                                                     : 1)),
                    status_or_option.value(),
                    array_record::ArrayRecordGlobalPool());
              } else {
